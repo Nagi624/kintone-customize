@@ -371,20 +371,41 @@
     }
   }
 
+  function attemptSetup() {
+    if (document.getElementById("customer-map-toggle-btn")) {
+      return true; // 既に設置済み
+    }
+    if (trySetup(setupMapUiDesktop)) {
+      return true;
+    }
+    return trySetup(setupMapUiMobile);
+  }
+
+  // kintoneの"app.record.index.show"イベントに頼る方式(念のため残す。再描画時の再設置用)
   kintone.events.on("app.record.index.show", function (event) {
     console.log("[customer-map] app.record.index.show fired. location=", location.href);
-    if (document.getElementById("customer-map-toggle-btn")) {
-      console.log("[customer-map] button already exists, skipping");
-      return event; // 既にボタンがある場合は何もしない(二重描画防止)
-    }
-
-    // PC版のAPIを優先して試し、要素が見つからない場合だけモバイル版を試す
-    // (kintone.appがモバイル環境でも部分的に存在することがあるため、片方だけで判定しない)
-    if (!trySetup(setupMapUiDesktop)) {
-      var mobileOk = trySetup(setupMapUiMobile);
-      console.log("[customer-map] mobile setup result:", mobileOk);
-    }
-
+    attemptSetup();
     return event;
   });
+
+  // 上記イベントが発火しない画面(実機のモバイルブラウザ版で確認)向けに、
+  // ページ読み込み後、ボタンの設置場所が使えるようになるまで一定間隔でリトライする
+  (function pollForSetup() {
+    var attempts = 0;
+    var maxAttempts = 20; // 500ms x 20 = 最大10秒リトライ
+    var timer = setInterval(function () {
+      attempts++;
+      var done = attemptSetup();
+      console.log("[customer-map] poll attempt " + attempts + " done=" + done);
+      if (done || attempts >= maxAttempts) {
+        clearInterval(timer);
+      }
+    }, 500);
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", function () {
+        attemptSetup();
+      });
+    }
+  })();
 })();
