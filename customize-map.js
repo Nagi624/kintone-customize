@@ -15,6 +15,14 @@
 (function () {
   "use strict";
 
+  console.log(
+    "[customer-map] SCRIPT TOP LEVEL EXECUTING url=" + location.href +
+    " readyState=" + document.readyState +
+    " kintone.app=" + typeof kintone.app +
+    " kintone.mobile=" + typeof kintone.mobile +
+    " kintone.events=" + typeof kintone.events
+  );
+
   var APP_ID_CUSTOMER = (function () {
     // PC版のAPIを優先して試し、使えない場合だけモバイル版のAPIにフォールバックする
     // (kintone.mobile自体はPC版でも存在することがあるため、存在チェックだけでは判定できない)
