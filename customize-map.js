@@ -25,19 +25,25 @@
 
   var APP_ID_CUSTOMER = (function () {
     // PC版のAPIを優先して試し、使えない場合だけモバイル版のAPIにフォールバックする
-    // (kintone.mobile自体はPC版でも存在することがあるため、存在チェックだけでは判定できない)
+    // (kintone.mobile/kintone.app自体はどちらの環境でも「存在する」ことがあり、
+    //  かつ例外を投げずにundefinedを返すこともあるため、例外の有無だけでなく
+    //  戻り値そのものが取得できたかどうかも確認する)
     try {
-      return kintone.app.getId();
+      var idFromApp = kintone.app.getId();
+      if (idFromApp) return idFromApp;
     } catch (e) {
       // ignore
     }
     try {
-      return kintone.mobile.app.getId();
+      var idFromMobile = kintone.mobile.app.getId();
+      if (idFromMobile) return idFromMobile;
     } catch (e) {
       // ignore
     }
     return null;
   })(); // このアプリ自身のID
+
+  console.log("[customer-map] APP_ID_CUSTOMER=" + APP_ID_CUSTOMER);
   var RANK_COLOR = { A: "#e53935", B: "#fb8c00", C: "#1e88e5", D: "#757575" };
   var mapInstance = null;
   var allRecords = []; // フェッチ済みの全レコードをキャッシュ(フィルタ時に再取得しない)
