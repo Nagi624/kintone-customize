@@ -4,7 +4,9 @@
  * - 緯度・経度が入っている全レコードを地図上にピン表示
  * - ピンの色は「顧客ランク」で色分け(S=紫/A=赤/B=オレンジ/C=青/D=グレー)
  * - 顧客ランクのチェックボックスで表示/非表示をフィルタ可能
- * - ピンをクリックすると会社名・業種・顧客ランクを表示し、レコード詳細へのリンクを出す
+ * - 「90日以上未接触の顧客のみ表示」チェックで、活動履歴(アプリ17)に基づき
+ *   直近90日以内の対応記録が無い顧客だけに絞り込み表示できる(放置顧客の掘り起こし用)
+ * - ピンをクリックすると会社名・業種・顧客ランク・最終接触日を表示し、レコード詳細へのリンクを出す
  * - 新規登録・住所変更時に、都道府県+住所からOpenStreetMap Nominatim(無料)で
  *   自動的に緯度・経度を計算して保存する(手動でのジオコーディング作業が不要)
  * - PC(デスクトップ)・スマートフォンブラウザの両方で地図を表示可能
@@ -44,10 +46,25 @@
   })(); // このアプリ自身のID
 
   console.log("[customer-map] APP_ID_CUSTOMER=" + APP_ID_CUSTOMER);
+  var APP_ID_ACTIVITY = "17"; // 活動履歴
+  var STALE_DAYS_THRESHOLD = 90;
   var RANK_COLOR = { A: "#e53935", B: "#fb8c00", C: "#1e88e5", D: "#757575" };
   var mapInstance = null;
   var allRecords = []; // フェッチ済みの全レコードをキャッシュ(フィルタ時に再取得しない)
   var checkedRanks = {}; // rankごとのチェック状態
+  var lastActivityByCustomerNo = {}; // 顧客No -> 最終対応日付(Dateオブジェクト)
+  var showStaleOnly = false;
+
+  function daysSince(date) {
+    return Math.floor((Date.now() - date.getTime()) / 86400000);
+  }
+
+  function isStaleCustomer(rec) {
+    var customerNo = fv(rec, "顧客No", "");
+    var last = lastActivityByCustomerNo[customerNo];
+    if (!last) return true; // 活動履歴が1件も無い
+    return daysSince(last) >= STALE_DAYS_THRESHOLD;
+  }
 
   function fv(record, code, fallback) {
     return record && record[code] && record[code].value != null ? record[code].value : fallback !== undefined ? fallback : "";
@@ -103,6 +120,25 @@
       filterBar.appendChild(label);
     });
 
+    var staleLabel = document.createElement("label");
+    staleLabel.style.cssText = "display:inline-block;margin-left:4px;cursor:pointer;color:#c62828;font-weight:bold;";
+    var staleCb = document.createElement("input");
+    staleCb.type = "checkbox";
+    staleCb.checked = false;
+    staleCb.style.marginRight = "4px";
+    if (isMobile) {
+      staleCb.style.width = "16px";
+      staleCb.style.height = "16px";
+      staleCb.style.verticalAlign = "middle";
+    }
+    staleCb.addEventListener("change", function () {
+      showStaleOnly = staleCb.checked;
+      applyFilterAndRender();
+    });
+    staleLabel.appendChild(staleCb);
+    staleLabel.appendChild(document.createTextNode("🔴 " + STALE_DAYS_THRESHOLD + "日以上未接触の顧客のみ表示"));
+    filterBar.appendChild(staleLabel);
+
     var mapDiv = document.createElement("div");
     mapDiv.id = "customer-map";
     mapDiv.style.width = "100%";
@@ -123,15 +159,39 @@
     var params = {
       app: APP_ID_CUSTOMER,
       query: '緯度 != "" and 経度 != "" limit 500',
-      fields: ["$id", "会社名", "業種", "顧客ランク", "都道府県", "住所", "緯度", "経度"],
+      fields: ["$id", "会社名", "業種", "顧客ランク", "都道府県", "住所", "緯度", "経度", "顧客No"],
     };
     return kintone.api(kintone.api.url("/k/v1/records", true), "GET", params);
+  }
+
+  function fetchAllActivities() {
+    return kintone.api(kintone.api.url("/k/v1/records", true), "GET", {
+      app: APP_ID_ACTIVITY,
+      query: "顧客No != \"\" limit 500",
+      fields: ["顧客No", "対応日付"],
+    });
+  }
+
+  function buildLastActivityMap(activityRecords) {
+    var map = {};
+    activityRecords.forEach(function (rec) {
+      var customerNo = fv(rec, "顧客No", "");
+      var dateStr = fv(rec, "対応日付", "");
+      if (!customerNo || !dateStr) return;
+      var date = new Date(dateStr);
+      if (!map[customerNo] || date > map[customerNo]) {
+        map[customerNo] = date;
+      }
+    });
+    return map;
   }
 
   function applyFilterAndRender() {
     var filtered = allRecords.filter(function (rec) {
       var rank = fv(rec, "顧客ランク", "");
-      return checkedRanks[rank] !== false; // ランク未設定は常に表示
+      var rankOk = checkedRanks[rank] !== false; // ランク未設定は常に表示
+      var staleOk = !showStaleOnly || isStaleCustomer(rec);
+      return rankOk && staleOk;
     });
     renderMap(filtered);
   }
@@ -169,11 +229,20 @@
       var recordId = fv(rec, "$id", "");
       var recordUrl = location.protocol + "//" + location.host + "/k/" + APP_ID_CUSTOMER + "/show#record=" + recordId;
 
+      var lastActivity = lastActivityByCustomerNo[fv(rec, "顧客No", "")];
+      var lastActivityText = lastActivity
+        ? lastActivity.toLocaleDateString("ja-JP") + "(" + daysSince(lastActivity) + "日前)"
+        : "活動履歴なし";
+      var staleTag = isStaleCustomer(rec)
+        ? ' <span style="color:#c62828;font-weight:bold;">[' + STALE_DAYS_THRESHOLD + "日以上未接触]</span>"
+        : "";
+
       var popupHtml =
         '<div style="font-size:13px;line-height:1.6">' +
         "<strong>" + escapeHtml(fv(rec, "会社名", "") || "(会社名未入力)") + "</strong><br>" +
         "業種: " + escapeHtml(fv(rec, "業種", "") || "-") + "<br>" +
         "顧客ランク: " + escapeHtml(rank || "-") + "<br>" +
+        "最終接触: " + escapeHtml(lastActivityText) + staleTag + "<br>" +
         "住所: " + escapeHtml(fv(rec, "都道府県", "") + fv(rec, "住所", "")) + "<br>" +
         '<a href="' + recordUrl + '" target="_blank" rel="noopener">レコードを開く &gt;</a>' +
         "</div>";
@@ -298,9 +367,10 @@
       btn.textContent = shown ? "地図を閉じる" : "地図で表示";
       if (shown) {
         btn.disabled = true;
-        fetchAllRecordsWithCoords()
-          .then(function (resp) {
-            allRecords = resp.records;
+        Promise.all([fetchAllRecordsWithCoords(), fetchAllActivities()])
+          .then(function (results) {
+            allRecords = results[0].records;
+            lastActivityByCustomerNo = buildLastActivityMap(results[1].records);
             applyFilterAndRender();
           })
           .catch(function (err) {
