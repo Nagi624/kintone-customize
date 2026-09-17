@@ -4,6 +4,8 @@
  * - 会社名で顧客管理アプリ(顧客管理)の緯度経度と紐付けて地図上にピン表示
  * - ピンの色は事業カテゴリ、形は商談フェーズを表す
  * - 事業カテゴリ・商談フェーズのチェックボックスで表示/非表示をフィルタ可能(AND条件)
+ * - 「未フォロー案件のみ表示」チェックで、進行中(受注/失注/保留中止でない)かつ
+ *   次回商談日が未設定または過去日の案件だけに絞り込み表示できる(フォロー漏れの可視化)
  * - ピンをクリックすると案件名・会社名・商談フェーズ・売上を表示し、
  *   案件レコードと顧客レコード両方へのリンクを出す
  *
@@ -63,10 +65,20 @@
     cross: "✚",
   };
 
+  var CLOSED_PHASES = { "受注": true, "失注": true, "保留/中止": true };
+
   var mapInstance = null;
   var mapData = null; // loadMapData()の結果をキャッシュ(フィルタ時に再取得しない)
   var checkedCategory = {};
   var checkedPhase = {};
+  var showUnfollowedOnly = false;
+
+  function isUnfollowed(deal) {
+    if (CLOSED_PHASES[deal.__phase]) return false; // 受注/失注/保留中止は対象外
+    var nextDate = fv(deal, "次回商談日", "");
+    if (!nextDate) return true; // 次回商談日が未設定
+    return new Date(nextDate).getTime() < Date.now(); // 過去日
+  }
 
   // フィールドが未取得/空でも落ちないようにする安全アクセサ
   function fv(record, code, fallback) {
@@ -203,6 +215,29 @@
     }, isMobile);
     phaseRow.style.marginBottom = "8px";
 
+    var unfollowedRow = document.createElement("div");
+    unfollowedRow.style.cssText = isMobile
+      ? "font-size:14px;margin-bottom:8px;padding:0 8px;"
+      : "font-size:12px;margin-bottom:8px;";
+    var unfollowedLabel = document.createElement("label");
+    unfollowedLabel.style.cssText = "display:inline-block;cursor:pointer;color:#c62828;font-weight:bold;";
+    var unfollowedCb = document.createElement("input");
+    unfollowedCb.type = "checkbox";
+    unfollowedCb.checked = false;
+    unfollowedCb.style.marginRight = "4px";
+    if (isMobile) {
+      unfollowedCb.style.width = "16px";
+      unfollowedCb.style.height = "16px";
+      unfollowedCb.style.verticalAlign = "middle";
+    }
+    unfollowedCb.addEventListener("change", function () {
+      showUnfollowedOnly = unfollowedCb.checked;
+      applyFilterAndRender();
+    });
+    unfollowedLabel.appendChild(unfollowedCb);
+    unfollowedLabel.appendChild(document.createTextNode("🔴 未フォロー案件のみ表示(進行中で次回商談日が未設定/過去)"));
+    unfollowedRow.appendChild(unfollowedLabel);
+
     var mapDiv = document.createElement("div");
     mapDiv.id = "deal-map";
     mapDiv.style.width = "100%";
@@ -212,6 +247,7 @@
 
     wrapper.appendChild(categoryRow);
     wrapper.appendChild(phaseRow);
+    wrapper.appendChild(unfollowedRow);
     wrapper.appendChild(mapDiv);
     return wrapper;
   }
@@ -246,7 +282,7 @@
 
   function loadMapData() {
     return Promise.all([
-      fetchAll(APP_ID_DEAL, ["$id", "案件名", "会社名", "商談フェーズ", "売上", "提案商品明細", "提案商品"]),
+      fetchAll(APP_ID_DEAL, ["$id", "案件名", "会社名", "商談フェーズ", "売上", "提案商品明細", "提案商品", "次回商談日"]),
       fetchAll(APP_ID_PRODUCT, ["文字列__1行_", "カテゴリ"]),
       fetchAll(APP_ID_CUSTOMER, ["$id", "会社名", "顧客No", "緯度", "経度"]),
     ]).then(function (results) {
@@ -282,7 +318,8 @@
     var filtered = mapData.deals.filter(function (deal) {
       var catOk = checkedCategory[deal.__category] !== false;
       var phaseOk = !deal.__phase || checkedPhase[deal.__phase] !== false;
-      return catOk && phaseOk;
+      var unfollowedOk = !showUnfollowedOnly || isUnfollowed(deal);
+      return catOk && phaseOk && unfollowedOk;
     });
     renderMap(filtered, mapData.customerByName);
   }
@@ -335,6 +372,8 @@
         "<strong>" + escapeHtml(fv(deal, "案件名", "") || "(案件名未入力)") + "</strong><br>" +
         "会社名: " + escapeHtml(companyName || "-") + "<br>" +
         "商談フェーズ: " + escapeHtml(deal.__phase || "-") + "<br>" +
+        "次回商談日: " + escapeHtml(fv(deal, "次回商談日", "") ? new Date(fv(deal, "次回商談日", "")).toLocaleString("ja-JP") : "未設定") +
+        (isUnfollowed(deal) ? ' <span style="color:#c62828;font-weight:bold;">[未フォロー]</span>' : "") + "<br>" +
         "事業カテゴリ: " + escapeHtml(deal.__category) + "<br>" +
         "売上: ¥" + escapeHtml(Number(fv(deal, "売上", 0) || 0).toLocaleString()) + "<br>" +
         '<a href="' + dealUrl + '" target="_blank" rel="noopener">案件を開く &gt;</a>　' +
