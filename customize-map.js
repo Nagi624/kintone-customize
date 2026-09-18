@@ -6,7 +6,7 @@
  * - 顧客ランクのチェックボックスで表示/非表示をフィルタ可能
  * - 「90日以上未接触の顧客のみ表示」チェックで、活動履歴(アプリ17)に基づき
  *   直近90日以内の対応記録が無い顧客だけに絞り込み表示できる(放置顧客の掘り起こし用)
- * - ピンをクリックすると会社名・業種・顧客ランク・最終接触日を表示し、レコード詳細へのリンクを出す
+ * - ピンをクリックすると会社名・大分類・中分類・顧客ランク・最終接触日を表示し、レコード詳細へのリンクを出す
  * - 新規登録・住所変更時に、都道府県+住所からOpenStreetMap Nominatim(無料)で
  *   自動的に緯度・経度を計算して保存する(手動でのジオコーディング作業が不要)
  * - PC(デスクトップ)・スマートフォンブラウザの両方で地図を表示可能
@@ -159,7 +159,7 @@
     var params = {
       app: APP_ID_CUSTOMER,
       query: '緯度 != "" and 経度 != "" limit 500',
-      fields: ["$id", "会社名", "業種", "顧客ランク", "都道府県", "住所", "緯度", "経度", "顧客No"],
+      fields: ["$id", "会社名", "大分類", "中分類", "顧客ランク", "都道府県", "住所", "緯度", "経度", "顧客No"],
     };
     return kintone.api(kintone.api.url("/k/v1/records", true), "GET", params);
   }
@@ -240,7 +240,8 @@
       var popupHtml =
         '<div style="font-size:13px;line-height:1.6">' +
         "<strong>" + escapeHtml(fv(rec, "会社名", "") || "(会社名未入力)") + "</strong><br>" +
-        "業種: " + escapeHtml(fv(rec, "業種", "") || "-") + "<br>" +
+        "業種: " + escapeHtml(fv(rec, "大分類", "") || "-") +
+        (fv(rec, "中分類", "") && fv(rec, "中分類", "") !== "-" ? " / " + escapeHtml(fv(rec, "中分類", "")) : "") + "<br>" +
         "顧客ランク: " + escapeHtml(rank || "-") + "<br>" +
         "最終接触: " + escapeHtml(lastActivityText) + staleTag + "<br>" +
         "住所: " + escapeHtml(fv(rec, "都道府県", "") + fv(rec, "住所", "")) + "<br>" +
