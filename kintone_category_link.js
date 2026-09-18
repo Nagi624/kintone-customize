@@ -50,38 +50,72 @@
     'その他': ['-']
   };
 
-  function setMiddleCategoryChoices(largeCategory) {
-    const elem = kintone.app.record.getFieldElement('中分類');
-    if (!elem) return;
+  function getMiddleSelectElement() {
+    var elem = null;
+    try {
+      if (kintone.app && kintone.app.record && typeof kintone.app.record.getFieldElement === 'function') {
+        elem = kintone.app.record.getFieldElement('中分類');
+      }
+    } catch (e) {
+      // ignore (mobile screen)
+    }
+    if (!elem) {
+      try {
+        if (kintone.mobile && kintone.mobile.app && kintone.mobile.app.record &&
+          typeof kintone.mobile.app.record.getFieldElement === 'function') {
+          elem = kintone.mobile.app.record.getFieldElement('中分類');
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+    if (!elem) return null;
+    return elem.querySelector('select');
+  }
 
-    const options = (categoryMap[largeCategory] || ['-']).map(function (label) {
-      return { label: label, value: label };
+  function fillSelectOptions(select, labels, selectedValue) {
+    while (select.firstChild) {
+      select.removeChild(select.firstChild);
+    }
+    labels.forEach(function (label) {
+      var opt = document.createElement('option');
+      opt.value = label;
+      opt.textContent = label;
+      select.appendChild(opt);
     });
+    select.value = labels.indexOf(selectedValue) !== -1 ? selectedValue : labels[0];
+  }
 
-    elem.setChoices(options);
+  function setMiddleCategoryChoices(largeCategory, selectedValue) {
+    var select = getMiddleSelectElement();
+    if (!select) return;
+    var labels = categoryMap[largeCategory] || ['-'];
+    fillSelectOptions(select, labels, selectedValue);
   }
 
   kintone.events.on(['app.record.create.show', 'app.record.edit.show'], function (event) {
-    const record = event.record;
-    const largeCategory = record['大分類'] && record['大分類'].value;
+    var largeCategory = event.record['大分類'] && event.record['大分類'].value;
+    var currentValue = event.record['中分類'] && event.record['中分類'].value;
     if (largeCategory) {
-      setMiddleCategoryChoices(largeCategory);
+      setTimeout(function () {
+        setMiddleCategoryChoices(largeCategory, currentValue);
+      }, 0);
     }
     return event;
   });
 
   kintone.events.on(['app.record.create.change.大分類', 'app.record.edit.change.大分類'], function (event) {
-    const largeCategory = event.record['大分類'] && event.record['大分類'].value;
-    if (largeCategory) {
-      setMiddleCategoryChoices(largeCategory);
-      if (event.record['中分類']) {
-        const validValues = (categoryMap[largeCategory] || ['-']);
-        const currentValue = event.record['中分類'].value;
-        if (currentValue && validValues.indexOf(currentValue) === -1) {
-          event.record['中分類'].value = '-';
-        }
-      }
+    var largeCategory = event.record['大分類'] && event.record['大分類'].value;
+    var validValues = categoryMap[largeCategory] || ['-'];
+    var currentValue = event.record['中分類'] && event.record['中分類'].value;
+    var nextValue = validValues.indexOf(currentValue) !== -1 ? currentValue : validValues[0];
+
+    if (event.record['中分類']) {
+      event.record['中分類'].value = nextValue;
     }
+    setTimeout(function () {
+      setMiddleCategoryChoices(largeCategory, nextValue);
+    }, 0);
     return event;
   });
 })();
