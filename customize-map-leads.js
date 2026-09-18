@@ -4,8 +4,9 @@
  * - 緯度・経度が入っている全レコードを地図上にピン表示(500件超も全件取得)
  * - ピンの色は「業種カテゴリ」で色分け(タクシー・ハイヤー/飲食業/サロン・美容)
  * - 業種カテゴリのチェックボックスで表示/非表示をフィルタ可能
- * - 「廃業・移転を除いて表示」チェックで、稼働状況が廃業・閉店/移転の企業を除外できる
- * - ピンをクリックすると会社名・業種・実在確認・稼働状況・対応状況・電話番号を表示し、レコード詳細へのリンクを出す
+ * - 「対象外(業種不一致/廃業・閉店/移転)を除いて表示」チェックで、確認ステータスが
+ *   稼働中/不明以外(=営業対象として有効でないと判明済み)の企業を除外できる
+ * - ピンをクリックすると会社名・業種・確認ステータス・確認者・対応状況・電話番号を表示し、レコード詳細へのリンクを出す
  * - 新規登録・住所変更時に、都道府県+市区町村+丁目番地等からOpenStreetMap Nominatim(無料)で
  *   自動的に緯度・経度を計算して保存する(手動でのジオコーディング作業が不要)
  *   ※ ただしkintone REST API経由での一括登録(bulk import)ではこのイベントは発火しないため、
@@ -40,7 +41,7 @@
     "飲食業": "#fb8c00",
     "サロン・美容": "#e53935",
   };
-  var CLOSED_STATUSES = { "廃業・閉店": true, "移転": true };
+  var EXCLUDABLE_STATUSES = { "業種不一致": true, "廃業・閉店": true, "移転": true };
 
   var mapInstance = null;
   var allRecords = [];
@@ -117,7 +118,7 @@
       applyFilterAndRender();
     });
     closedLabel.appendChild(closedCb);
-    closedLabel.appendChild(document.createTextNode("🚫 廃業・移転を除いて表示"));
+    closedLabel.appendChild(document.createTextNode("🚫 対象外(業種不一致/廃業/移転)を除いて表示"));
     filterBar.appendChild(closedLabel);
 
     var mapDiv = document.createElement("div");
@@ -139,7 +140,7 @@
   function fetchAllRecordsWithCoords() {
     var fields = [
       "$id", "会社名", "業種カテゴリ", "都道府県", "市区町村", "丁目番地等",
-      "電話番号", "実在確認", "業種確認メモ", "稼働状況", "対応状況", "緯度", "経度",
+      "電話番号", "確認ステータス", "業種確認メモ", "確認者", "対応状況", "緯度", "経度",
     ];
     var pageSize = 500;
     var results = [];
@@ -165,8 +166,8 @@
     var filtered = allRecords.filter(function (rec) {
       var category = fv(rec, "業種カテゴリ", "");
       var categoryOk = checkedCategories[category] !== false;
-      var status = fv(rec, "稼働状況", "");
-      var closedOk = !hideClosed || !CLOSED_STATUSES[status];
+      var status = fv(rec, "確認ステータス", "");
+      var closedOk = !hideClosed || !EXCLUDABLE_STATUSES[status];
       return categoryOk && closedOk;
     });
     renderMap(filtered);
@@ -193,20 +194,20 @@
 
       var category = fv(rec, "業種カテゴリ", "");
       var color = CATEGORY_COLOR[category] || "#757575";
-      var status = fv(rec, "稼働状況", "");
+      var status = fv(rec, "確認ステータス", "");
 
       var marker = L.circleMarker([lat, lon], {
         radius: 9,
         color: "#333",
         weight: 1,
         fillColor: color,
-        fillOpacity: CLOSED_STATUSES[status] ? 0.35 : 0.85,
+        fillOpacity: EXCLUDABLE_STATUSES[status] ? 0.35 : 0.85,
       }).addTo(mapInstance);
 
       var recordId = fv(rec, "$id", "");
       var recordUrl = location.protocol + "//" + location.host + "/k/" + APP_ID_LEADS + "/show#record=" + recordId;
       var tel = fv(rec, "電話番号", "");
-      var statusTag = CLOSED_STATUSES[status]
+      var statusTag = EXCLUDABLE_STATUSES[status]
         ? ' <span style="color:#c62828;font-weight:bold;">[' + escapeHtml(status) + "]</span>"
         : "";
 
@@ -214,8 +215,9 @@
         '<div style="font-size:13px;line-height:1.6">' +
         "<strong>" + escapeHtml(fv(rec, "会社名", "") || "(会社名未入力)") + "</strong>" + statusTag + "<br>" +
         "業種: " + escapeHtml(category || "-") + "<br>" +
-        "実在確認: " + escapeHtml(fv(rec, "実在確認", "") || "-") +
+        "確認ステータス: " + escapeHtml(status || "-") +
         "(" + escapeHtml(fv(rec, "業種確認メモ", "") || "-") + ")<br>" +
+        "確認者: " + escapeHtml(fv(rec, "確認者", "") || "-") + "<br>" +
         "対応状況: " + escapeHtml(fv(rec, "対応状況", "") || "-") + "<br>" +
         (tel ? "電話: " + escapeHtml(tel) + "<br>" : "") +
         "住所: " + escapeHtml(fv(rec, "都道府県", "") + fv(rec, "市区町村", "") + fv(rec, "丁目番地等", "")) + "<br>" +
