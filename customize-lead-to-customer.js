@@ -1,7 +1,7 @@
 /**
  * 見込み客リストアプリ用 「顧客管理へ登録」ボタン
  * - レコード詳細画面のボタンをクリックすると、基本情報(会社名・住所・電話番号・
- *   業種・大分類・中分類・緯度経度・出典URL→Webサイト)を自動入力した状態で顧客管理(app18)に
+ *   大分類・中分類・緯度経度・出典URL→Webサイト)を自動入力した状態で顧客管理(app18)に
  *   新規レコードをAPI経由で直接作成する(基本情報の再入力・再確認は不要)
  *   ※ 大分類・中分類は顧客管理側も同じ選択肢セットのため、マッピングなしでそのままコピーする
  * - 「顧客ランク」(必須項目)は営業側の主観判断が必要なため、仮に最低ランク「D」で
@@ -33,25 +33,6 @@
     return null;
   })();
 
-  var CATEGORY_TO_GYOSHU = {
-    "医療・健康・介護": "サービス業",
-    "住まい": "不動産業",
-    "旅行・宿泊": "サービス業",
-    "グルメ": "卸売業、小売業、飲食店",
-    "美容・ファッション": "サービス業",
-    "自動車・バイク": "卸売業、小売業、飲食店",
-    "暮らし": "その他",
-    "ショッピング": "卸売業、小売業、飲食店",
-    "ペット": "サービス業",
-    "趣味": "その他",
-    "教育・習い事": "サービス業",
-    "公共機関・団体": "公務",
-    "レジャー・スポーツ": "サービス業",
-    "冠婚葬祭・イベント": "サービス業",
-    "交通": "運輸・通信業",
-    "その他": "その他",
-  };
-
   function fv(record, code, fallback) {
     return record && record[code] && record[code].value != null ? record[code].value : fallback !== undefined ? fallback : "";
   }
@@ -59,7 +40,6 @@
   function buildCustomerRecord(record) {
     var majorCategory = fv(record, "大分類", "");
     var minorCategory = fv(record, "中分類", "");
-    var gyoshu = CATEGORY_TO_GYOSHU[majorCategory] || "";
     var address = fv(record, "市区町村", "") + fv(record, "丁目番地等", "");
     var status = fv(record, "確認ステータス", "");
     var memo = fv(record, "業種確認メモ", "");
@@ -80,7 +60,6 @@
       "都道府県": fv(record, "都道府県", ""),
       "住所": address,
       "電話番号": fv(record, "電話番号", ""),
-      "業種": gyoshu,
       "大分類": majorCategory,
       "中分類": minorCategory,
       "Webサイト": fv(record, "出典URL", ""),
@@ -216,4 +195,29 @@
     btn.style.marginRight = "0";
     btn.style.marginBottom = "6px";
     btn.style.padding = "10px 14px";
-    wireButton(btn, r
+    wireButton(btn, record);
+    space.appendChild(btn);
+    return true;
+  }
+
+  function trySetup(fn, record) {
+    try {
+      return !!fn(record);
+    } catch (e) {
+      console.warn("「顧客管理へ登録」ボタンの設置に失敗しました(別方式を試します):", e);
+      return false;
+    }
+  }
+
+  function attachButton(event) {
+    if (document.getElementById("lead-to-customer-btn")) {
+      return event;
+    }
+    if (!trySetup(setupDesktop, event.record)) {
+      trySetup(setupMobile, event.record);
+    }
+    return event;
+  }
+
+  kintone.events.on("app.record.detail.show", attachButton);
+})();
