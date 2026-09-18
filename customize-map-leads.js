@@ -2,8 +2,10 @@
  * 見込み客リストアプリ用 地図表示カスタマイズ
  * - 一覧画面に「地図で表示」ボタンを追加
  * - 緯度・経度が入っている全レコードを地図上にピン表示(500件超も全件取得)
- * - ピンの色は「業種カテゴリ」で色分け(タクシー・ハイヤー/飲食業/サロン・美容)
- * - 業種カテゴリのチェックボックスで表示/非表示をフィルタ可能
+ * - ピンの色は「大分類」で色分け(医療・健康・介護/住まい/旅行・宿泊/グルメ/美容・ファッション/
+ *   自動車・バイク/暮らし/ショッピング/ペット/趣味/教育・習い事/公共機関・団体/レジャー・スポーツ/
+ *   冠婚葬祭・イベント/交通/その他)
+ * - 大分類のチェックボックスで表示/非表示をフィルタ可能
  * - 「対象外(業種不一致/廃業・閉店/移転)を除いて表示」チェックで、確認ステータスが
  *   稼働中/不明以外(=営業対象として有効でないと判明済み)の企業を除外できる
  * - ピンをクリックすると会社名・業種・確認ステータス・確認者・対応状況・電話番号を表示し、レコード詳細へのリンクを出す
@@ -37,9 +39,22 @@
   })();
 
   var CATEGORY_COLOR = {
-    "タクシー・ハイヤー": "#1e88e5",
-    "飲食業": "#fb8c00",
-    "サロン・美容": "#e53935",
+    "医療・健康・介護": "#e53935",
+    "住まい": "#6d4c41",
+    "旅行・宿泊": "#039be5",
+    "グルメ": "#fb8c00",
+    "美容・ファッション": "#d81b60",
+    "自動車・バイク": "#3949ab",
+    "暮らし": "#c0ca33",
+    "ショッピング": "#8e24aa",
+    "ペット": "#43a047",
+    "趣味": "#ffb300",
+    "教育・習い事": "#00897b",
+    "公共機関・団体": "#546e7a",
+    "レジャー・スポーツ": "#f4511e",
+    "冠婚葬祭・イベント": "#5e35b1",
+    "交通": "#1e88e5",
+    "その他": "#757575",
   };
   var EXCLUDABLE_STATUSES = { "業種不一致": true, "廃業・閉店": true, "移転": true };
 
@@ -139,7 +154,7 @@
 
   function fetchAllRecordsWithCoords() {
     var fields = [
-      "$id", "会社名", "業種カテゴリ", "都道府県", "市区町村", "丁目番地等",
+      "$id", "会社名", "大分類", "中分類", "都道府県", "市区町村", "丁目番地等",
       "電話番号", "確認ステータス", "業種確認メモ", "確認者", "対応状況", "緯度", "経度",
     ];
     var pageSize = 500;
@@ -164,7 +179,7 @@
 
   function applyFilterAndRender() {
     var filtered = allRecords.filter(function (rec) {
-      var category = fv(rec, "業種カテゴリ", "");
+      var category = fv(rec, "大分類", "");
       var categoryOk = checkedCategories[category] !== false;
       var status = fv(rec, "確認ステータス", "");
       var closedOk = !hideClosed || !EXCLUDABLE_STATUSES[status];
@@ -192,7 +207,8 @@
       var lon = parseFloat(fv(rec, "経度", ""));
       if (isNaN(lat) || isNaN(lon)) return;
 
-      var category = fv(rec, "業種カテゴリ", "");
+      var category = fv(rec, "大分類", "");
+      var subCategory = fv(rec, "中分類", "");
       var color = CATEGORY_COLOR[category] || "#757575";
       var status = fv(rec, "確認ステータス", "");
 
@@ -214,7 +230,7 @@
       var popupHtml =
         '<div style="font-size:13px;line-height:1.6">' +
         "<strong>" + escapeHtml(fv(rec, "会社名", "") || "(会社名未入力)") + "</strong>" + statusTag + "<br>" +
-        "業種: " + escapeHtml(category || "-") + "<br>" +
+        "業種: " + escapeHtml(category || "-") + (subCategory && subCategory !== "-" ? " / " + escapeHtml(subCategory) : "") + "<br>" +
         "確認ステータス: " + escapeHtml(status || "-") +
         "(" + escapeHtml(fv(rec, "業種確認メモ", "") || "-") + ")<br>" +
         "確認者: " + escapeHtml(fv(rec, "確認者", "") || "-") + "<br>" +
