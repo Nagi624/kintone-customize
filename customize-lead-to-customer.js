@@ -37,22 +37,43 @@
     return record && record[code] && record[code].value != null ? record[code].value : fallback !== undefined ? fallback : "";
   }
 
+  function buildCallHistoryText(record) {
+    var table = record && record["架電履歴"] && record["架電履歴"].value;
+    if (!table || !table.length) return "";
+    var lines = table.map(function (row) {
+      var v = row.value;
+      var date = v["履歴日付"] && v["履歴日付"].value ? v["履歴日付"].value : "(日付不明)";
+      var result = v["履歴結果"] && v["履歴結果"].value ? v["履歴結果"].value : "";
+      var tantoEntities = (v["履歴担当"] && v["履歴担当"].value) || [];
+      var tanto = tantoEntities.map(function (u) { return u.name || u.code; }).join(",");
+      var memo = v["履歴メモ"] && v["履歴メモ"].value ? v["履歴メモ"].value : "";
+      var parts = [date, result];
+      if (tanto) parts.push("担当:" + tanto);
+      if (memo) parts.push(memo);
+      return "・" + parts.join(" ");
+    });
+    return "架電履歴:\n" + lines.join("\n");
+  }
+
   function buildCustomerRecord(record) {
     var majorCategory = fv(record, "大分類", "");
     var minorCategory = fv(record, "中分類", "");
     var address = fv(record, "市区町村", "") + fv(record, "丁目番地等", "");
     var status = fv(record, "確認ステータス", "");
     var memo = fv(record, "業種確認メモ", "");
+    var callHistoryText = buildCallHistoryText(record);
+
+    var memoLines = [
+      "見込み客リストより自動登録(顧客ランクは仮置きのD。登録内容を確認・修正してください)",
+      "元カテゴリ: " + majorCategory + (minorCategory && minorCategory !== "-" ? " / " + minorCategory : "") +
+        " / 確認ステータス: " + status + " / 業種確認メモ: " + memo,
+    ];
+    if (callHistoryText) memoLines.push(callHistoryText);
 
     var out = {
       "会社名": { value: fv(record, "会社名", "") },
       "顧客ランク": { value: DEFAULT_CUSTOMER_RANK },
-      "顧客情報メモ欄": {
-        value:
-          "見込み客リストより自動登録(顧客ランクは仮置きのD。登録内容を確認・修正してください)\n" +
-          "元カテゴリ: " + majorCategory + (minorCategory && minorCategory !== "-" ? " / " + minorCategory : "") +
-          " / 確認ステータス: " + status + " / 業種確認メモ: " + memo,
-      },
+      "顧客情報メモ欄": { value: memoLines.join("\n") },
     };
 
     var optional = {
