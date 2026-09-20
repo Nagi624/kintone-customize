@@ -1,11 +1,14 @@
 /**
  * 見込み客リストアプリ用 「顧客管理へ登録」ボタン
  * - レコード詳細画面のボタンをクリックすると、基本情報(会社名・住所・電話番号・
- *   大分類・中分類・緯度経度・出典URL→Webサイト)を自動入力した状態で顧客管理(app18)に
- *   新規レコードをAPI経由で直接作成する(基本情報の再入力・再確認は不要)
+ *   大分類・中分類・緯度経度・出典URL→Webサイト・業種メモ・営業時間・定休日)を自動入力した状態で
+ *   顧客管理(app18)に新規レコードをAPI経由で直接作成する(基本情報の再入力・再確認は不要)
  *   ※ 大分類・中分類は顧客管理側も同じ選択肢セットのため、マッピングなしでそのままコピーする
  * - 「顧客ランク」(必須項目)は営業側の主観判断が必要なため、仮に最低ランク「D」で
  *   作成し、作成直後に開くレコード画面でその場で修正してもらう運用
+ * - 見込み客リストの「架電履歴」サブテーブルは、顧客管理への登録と同時に活動履歴(app17)へ
+ *   1行=1レコードとして実登録する(対応種別は「電話」固定、会社名はルックアップで顧客管理と自動紐付け)。
+ *   これにより顧客管理側の「活動履歴一覧」に転換前の接触履歴がそのまま表示される
  * - 顧客管理への登録に成功したら、見込み客リスト側の元レコードは削除する
  *   (コピーではなく「移動」として扱う)
  * - 誤操作防止のため、作成前に確認ダイアログを一度挟む(削除される旨も明記)
@@ -15,6 +18,7 @@
   "use strict";
 
   var CUSTOMER_APP_ID = "18";
+  var ACTIVITY_APP_ID = "17";
   var DEFAULT_CUSTOMER_RANK = "D";
 
   var LEAD_APP_ID = (function () {
@@ -37,22 +41,9 @@
     return record && record[code] && record[code].value != null ? record[code].value : fallback !== undefined ? fallback : "";
   }
 
-  function buildCallHistoryText(record) {
+  function getCallHistoryRows(record) {
     var table = record && record["架電履歴"] && record["架電履歴"].value;
-    if (!table || !table.length) return "";
-    var lines = table.map(function (row) {
-      var v = row.value;
-      var date = v["履歴日付"] && v["履歴日付"].value ? v["履歴日付"].value : "(日付不明)";
-      var result = v["履歴結果"] && v["履歴結果"].value ? v["履歴結果"].value : "";
-      var tantoEntities = (v["履歴担当"] && v["履歴担当"].value) || [];
-      var tanto = tantoEntities.map(function (u) { return u.name || u.code; }).join(",");
-      var memo = v["履歴メモ"] && v["履歴メモ"].value ? v["履歴メモ"].value : "";
-      var parts = [date, result];
-      if (tanto) parts.push("担当:" + tanto);
-      if (memo) parts.push(memo);
-      return "・" + parts.join(" ");
-    });
-    return "架電履歴:\n" + lines.join("\n");
+    return table || [];
   }
 
   function buildCustomerRecord(record) {
@@ -61,14 +52,16 @@
     var address = fv(record, "市区町村", "") + fv(record, "丁目番地等", "");
     var status = fv(record, "確認ステータス", "");
     var memo = fv(record, "業種確認メモ", "");
-    var callHistoryText = buildCallHistoryText(record);
+    var callHistoryRows = getCallHistoryRows(record);
 
     var memoLines = [
       "見込み客リストより自動登録(顧客ランクは仮置きのD。登録内容を確認・修正してください)",
       "元カテゴリ: " + majorCategory + (minorCategory && minorCategory !== "-" ? " / " + minorCategory : "") +
         " / 確認ステータス: " + status + " / 業種確認メモ: " + memo,
     ];
-    if (callHistoryText) memoLines.push(callHistoryText);
+    if (callHistoryRows.length) {
+      memoLines.push("転換前の架電履歴(" + callHistoryRows.length + "件)は活動履歴タブを参照してください。");
+    }
 
     var out = {
       "会社名": { value: fv(record, "会社名", "") },
@@ -84,6 +77,9 @@
       "大分類": majorCategory,
       "中分類": minorCategory,
       "Webサイト": fv(record, "出典URL", ""),
+      "業種メモ": memo,
+      "営業時間": fv(record, "営業時間", ""),
+      "定休日": fv(record, "定休日", ""),
     };
     Object.keys(optional).forEach(function (key) {
       if (optional[key]) out[key] = { value: optional[key] };
@@ -100,6 +96,36 @@
   function createCustomerRecord(record) {
     var body = { app: CUSTOMER_APP_ID, record: buildCustomerRecord(record) };
     return kintone.api(kintone.api.url("/k/v1/record", true), "POST", body);
+  }
+
+  function buildActivityRecord(companyName, historyRow) {
+    var v = historyRow.value;
+    var result = v["履歴結果"] && v["履歴結果"].value ? v["履歴結果"].value : "";
+    var memo = v["履歴メモ"] && v["履歴メモ"].value ? v["履歴メモ"].value : "";
+    var date = v["履歴日付"] && v["履歴日付"].value ? v["履歴日付"].value : null;
+    var tanto = (v["履歴担当"] && v["履歴担当"].value) || [];
+
+    var content = (result ? "【" + result + "】" : "") + memo;
+    if (!content) content = "(見込み客リストからの移行記録。詳細メモなし)";
+
+    var rec = {
+      "会社名": { value: companyName },
+      "対応種別": { value: "電話" },
+      "内容": { value: content },
+    };
+    if (date) rec["対応日付"] = { value: date };
+    if (tanto.length) rec["対応者"] = { value: tanto.map(function (u) { return { code: u.code }; }) };
+    return rec;
+  }
+
+  function createActivityHistoryRecords(companyName, record) {
+    var rows = getCallHistoryRows(record);
+    if (!rows.length) return Promise.resolve();
+    var records = rows.map(function (row) { return buildActivityRecord(companyName, row); });
+    return kintone.api(kintone.api.url("/k/v1/records", true), "POST", {
+      app: ACTIVITY_APP_ID,
+      records: records,
+    });
   }
 
   function getLeadRecordId(record) {
@@ -155,6 +181,16 @@
       createCustomerRecord(record)
         .then(function (resp) {
           var customerId = resp.id;
+          return createActivityHistoryRecords(companyName, record)
+            .catch(function (actErr) {
+              console.error("顧客管理への登録は成功しましたが、架電履歴の活動履歴への転記に失敗しました:", actErr);
+              alert("顧客管理への登録は完了しましたが、架電履歴の活動履歴への転記に失敗しました。必要であれば手動で活動履歴に追加してください。");
+            })
+            .then(function () {
+              return customerId;
+            });
+        })
+        .then(function (customerId) {
           if (!leadId) {
             console.warn("見込み客リストのレコードIDが取得できなかったため、元レコードの削除はスキップしました。");
             return { customerId: customerId, deleted: false };
