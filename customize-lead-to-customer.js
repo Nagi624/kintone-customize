@@ -1,15 +1,15 @@
 /**
- * 見込み客リストアプリ用 「顧客管理へ登録」ボタン
+ * ネタリストアプリ用 「顧客管理へ登録」ボタン
  * - レコード詳細画面のボタンをクリックすると、基本情報(会社名・住所・電話番号・
  *   大分類・中分類・緯度経度・出典URL→Webサイト・業種メモ・営業時間・定休日)を自動入力した状態で
  *   顧客管理(app18)に新規レコードをAPI経由で直接作成する(基本情報の再入力・再確認は不要)
  *   ※ 大分類・中分類は顧客管理側も同じ選択肢セットのため、マッピングなしでそのままコピーする
  * - 「顧客ランク」(必須項目)は営業側の主観判断が必要なため、仮に最低ランク「D」で
  *   作成し、作成直後に開くレコード画面でその場で修正してもらう運用
- * - 見込み客リストの「架電履歴」サブテーブルは、顧客管理への登録と同時に活動履歴(app17)へ
+ * - ネタリストの「架電履歴」サブテーブルは、顧客管理への登録と同時に活動履歴(app17)へ
  *   1行=1レコードとして実登録する(対応種別は「電話」固定、会社名はルックアップで顧客管理と自動紐付け)。
  *   これにより顧客管理側の「活動履歴一覧」に転換前の接触履歴がそのまま表示される
- * - 顧客管理への登録に成功したら、見込み客リスト側の元レコードは削除する
+ * - 顧客管理への登録に成功したら、ネタリスト側の元レコードは削除する
  *   (コピーではなく「移動」として扱う)
  * - 誤操作防止のため、作成前に確認ダイアログを一度挟む(削除される旨も明記)
  * - PC・スマートフォンブラウザ両対応
@@ -19,26 +19,50 @@
 
   var CUSTOMER_APP_ID = "18";
   var ACTIVITY_APP_ID = "17";
+  var TANTOSHA_APP_ID = "20";
   var DEFAULT_CUSTOMER_RANK = "D";
+  var IS_MOBILE = false;
 
-  var LEAD_APP_ID = (function () {
-    try {
-      var idFromApp = kintone.app.getId();
-      if (idFromApp) return idFromApp;
-    } catch (e) {
-      // ignore
-    }
-    try {
-      var idFromMobile = kintone.mobile.app.getId();
-      if (idFromMobile) return idFromMobile;
-    } catch (e) {
-      // ignore
-    }
-    return null;
-  })();
+  // PCとスマホでレコード画面のURL形式が違う
+  function recordUrl(appId, recordId) {
+    var base = location.protocol + "//" + location.host;
+    return IS_MOBILE ? base + "/k/m/" + appId + "/show?record=" + recordId : base + "/k/" + appId + "/show#record=" + recordId;
+  }
+
+  var LEAD_APP_ID = "29"; // ネタリスト(読み込み時点ではスマホでgetIdが取れないことがあるため固定)
+
 
   function fv(record, code, fallback) {
     return record && record[code] && record[code].value != null ? record[code].value : fallback !== undefined ? fallback : "";
+  }
+
+  function splitName(fullName) {
+    var trimmed = (fullName || "").trim();
+    if (!trimmed) return { sei: "", mei: "" };
+    var parts = trimmed.split(/[\s　]+/);
+    if (parts.length === 1) return { sei: parts[0], mei: "" };
+    return { sei: parts[0], mei: parts.slice(1).join(" ") };
+  }
+
+  function createTantoshaFromLead(record) {
+    var tantoshaName = fv(record, "担当者氏名", "");
+    if (!tantoshaName) return Promise.resolve(null);
+    var name = splitName(tantoshaName);
+    var body = {
+      app: TANTOSHA_APP_ID,
+      record: {
+        "姓": { value: name.sei },
+        "名": { value: name.mei },
+        "役職": { value: fv(record, "担当者役職", "") },
+        "携帯番号": { value: fv(record, "担当者携帯電話", "") },
+        "メールアドレス": { value: fv(record, "担当者メール", "") },
+        "顧客名": { value: fv(record, "会社名", "") },
+        "決裁権": { value: "なし" },
+        "備考": { value: "ネタリストより自動登録(顧客ランクは仮置きのD。登録内容を確認・修正してください)" },
+        "名刺画像リンク": { value: fv(record, "元名刺リンク", "") },
+      },
+    };
+    return kintone.api(kintone.api.url("/k/v1/record", true), "POST", body);
   }
 
   function getCallHistoryRows(record) {
@@ -55,7 +79,7 @@
     var callHistoryRows = getCallHistoryRows(record);
 
     var memoLines = [
-      "見込み客リストより自動登録(顧客ランクは仮置きのD。登録内容を確認・修正してください)",
+      "ネタリストより自動登録(顧客ランクは仮置きのD。登録内容を確認・修正してください)",
       "元カテゴリ: " + majorCategory + (minorCategory && minorCategory !== "-" ? " / " + minorCategory : "") +
         " / 確認ステータス: " + status + " / 業種確認メモ: " + memo,
     ];
@@ -106,7 +130,7 @@
     var tanto = (v["履歴担当"] && v["履歴担当"].value) || [];
 
     var content = (result ? "【" + result + "】" : "") + memo;
-    if (!content) content = "(見込み客リストからの移行記録。詳細メモなし)";
+    if (!content) content = "(ネタリストからの移行記録。詳細メモなし)";
 
     var rec = {
       "会社名": { value: companyName },
@@ -169,7 +193,7 @@
       var confirmed = window.confirm(
         "「" + companyName + "」を顧客管理へ登録します。\n" +
         "顧客ランクは仮に「D」で登録されます。登録後に開く画面で内容を確認・修正してください。\n\n" +
-        "登録に成功すると、見込み客リスト側のこのレコードは削除されます(コピーではなく移動)。\n\n" +
+        "登録に成功すると、ネタリスト側のこのレコードは削除されます(コピーではなく移動)。\n\n" +
         "よろしいですか？"
       );
       if (!confirmed) return;
@@ -187,12 +211,19 @@
               alert("顧客管理への登録は完了しましたが、架電履歴の活動履歴への転記に失敗しました。必要であれば手動で活動履歴に追加してください。");
             })
             .then(function () {
+              return createTantoshaFromLead(record);
+            })
+            .catch(function (tantoshaErr) {
+              console.error("顧客管理への登録は成功しましたが、担当者管理への登録に失敗しました:", tantoshaErr);
+              alert("顧客管理への登録は完了しましたが、担当者情報の担当者管理への登録に失敗しました。必要であれば手動で担当者管理に追加してください。");
+            })
+            .then(function () {
               return customerId;
             });
         })
         .then(function (customerId) {
           if (!leadId) {
-            console.warn("見込み客リストのレコードIDが取得できなかったため、元レコードの削除はスキップしました。");
+            console.warn("ネタリストのレコードIDが取得できなかったため、元レコードの削除はスキップしました。");
             return { customerId: customerId, deleted: false };
           }
           return deleteLeadRecord(leadId)
@@ -200,14 +231,14 @@
               return { customerId: customerId, deleted: true };
             })
             .catch(function (delErr) {
-              console.error("顧客管理への登録は成功しましたが、見込み客リストの元レコード削除に失敗しました:", delErr);
-              alert("顧客管理への登録は完了しましたが、見込み客リスト側の元レコード削除に失敗しました。手動で削除してください。");
+              console.error("顧客管理への登録は成功しましたが、ネタリストの元レコード削除に失敗しました:", delErr);
+              alert("顧客管理への登録は完了しましたが、ネタリスト側の元レコード削除に失敗しました。手動で削除してください。");
               return { customerId: customerId, deleted: false };
             });
         })
         .then(function (result) {
-          var url = location.protocol + "//" + location.host + "/k/" + CUSTOMER_APP_ID + "/show#record=" + result.customerId;
-          if (result.deleted) {
+          var url = recordUrl(CUSTOMER_APP_ID, result.customerId);
+          if (result.deleted || IS_MOBILE) {
             location.href = url;
           } else {
             window.open(url, "_blank", "noopener");
@@ -240,11 +271,10 @@
 
   function setupMobile(record) {
     if (typeof kintone.mobile === "undefined" || typeof kintone.mobile.app === "undefined" ||
-      typeof kintone.mobile.app.record === "undefined" ||
-      typeof kintone.mobile.app.record.getHeaderMenuSpaceElement !== "function") {
+      typeof kintone.mobile.app.getHeaderSpaceElement !== "function") {
       return false;
     }
-    var space = kintone.mobile.app.record.getHeaderMenuSpaceElement();
+    var space = kintone.mobile.app.getHeaderSpaceElement();
     if (!space) return false;
 
     var btn = makeButton();
@@ -267,14 +297,13 @@
   }
 
   function attachButton(event) {
-    if (document.getElementById("lead-to-customer-btn")) {
-      return event;
-    }
-    if (!trySetup(setupDesktop, event.record)) {
-      trySetup(setupMobile, event.record);
-    }
+    IS_MOBILE = event.type.indexOf("mobile.") === 0;
+    // スマホは画面遷移しても前のボタンが残ることがあるため、毎回作り直して今のレコードに紐付ける
+    var old = document.getElementById("lead-to-customer-btn");
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    trySetup(IS_MOBILE ? setupMobile : setupDesktop, event.record);
     return event;
   }
 
-  kintone.events.on("app.record.detail.show", attachButton);
+  kintone.events.on(["app.record.detail.show", "mobile.app.record.detail.show"], attachButton);
 })();
