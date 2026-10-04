@@ -1,5 +1,5 @@
 /**
- * 見込み客リストアプリ用 地図表示カスタマイズ
+ * ネタリストアプリ用 地図表示カスタマイズ
  * - 一覧画面に「地図で表示」ボタンを追加
  * - 緯度・経度が入っている全レコードを地図上にピン表示(500件超も全件取得)
  * - ピンの色は「大分類」で色分け(医療・健康・介護/住まい/旅行・宿泊/グルメ/美容・ファッション/
@@ -323,21 +323,21 @@
       });
   }
 
-  kintone.events.on("app.record.create.show", function (event) {
+  kintone.events.on(["app.record.create.show", "mobile.app.record.create.show"], function (event) {
     originalAddressOnEdit = null;
     return event;
   });
 
-  kintone.events.on("app.record.edit.show", function (event) {
+  kintone.events.on(["app.record.edit.show", "mobile.app.record.edit.show"], function (event) {
     originalAddressOnEdit = buildAddressText(event.record);
     return event;
   });
 
-  kintone.events.on("app.record.create.submit", function (event) {
+  kintone.events.on(["app.record.create.submit", "mobile.app.record.create.submit"], function (event) {
     return maybeGeocodeOnSave(event, true);
   });
 
-  kintone.events.on("app.record.edit.submit", function (event) {
+  kintone.events.on(["app.record.edit.submit", "mobile.app.record.edit.submit"], function (event) {
     return maybeGeocodeOnSave(event, false);
   });
 
