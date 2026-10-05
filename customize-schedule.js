@@ -1327,6 +1327,9 @@
       });
       box.appendChild(mb);
     }
+    var del = el('button', { style: 'color:#b91c1c;border-color:#fca5a5' }, '🗑 削除');
+    del.addEventListener('click', function () { deleteFromButton(id, r); });
+    box.appendChild(del);
     if (box.children.length) space.appendChild(box);
   }
 
@@ -1532,7 +1535,9 @@
     }).then(function (d) {
       list.innerHTML = '';
       var map = L.map(mapEl).setView([43.0621, 141.3544], 11);
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+      L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+        maxZoom: 18, attribution: '<a href="https://maps.gsi.go.jp/development/ichiran.html" target="_blank">国土地理院</a>'
+      }).addTo(map);
       var bounds = [];
       if (!d.recs.length) list.textContent = 'この日の訪問・外出の予定はありません。';
       people.forEach(function (p) {
@@ -1579,28 +1584,54 @@
   }
 
   // ---------- 削除 ----------
+  var SERIES_DELETE_MSG = 'この予定は繰り返し予定です。\n\nOK: この後の繰り返しもまとめて削除する\nキャンセル: この回だけ削除する';
+
+  // この予定と一緒に消すレコード: その「予定あり」、(withFuture なら)この後の繰り返しとその「予定あり」
+  function relatedIds(id, r, withFuture) {
+    var p = withFuture ? futureOccurrences(r, ['$id']).then(function (occs) {
+      return occs.map(function (o) { return fv(o, '$id', ''); }).filter(function (x) { return x !== String(id); });
+    }) : kintone.Promise.resolve([]);
+    return p.then(function (future) {
+      var origs = [String(id)].concat(future);
+      return fetchAll(APP_ID, '元予定No in (' + origs.join(',') + ')', ['$id']).then(function (comps) {
+        return { future: future, comps: comps.map(function (c) { return fv(c, '$id', ''); }) };
+      });
+    });
+  }
+
+  function deleteIds(ids) {
+    return chunks(ids, 100).reduce(function (q, part) {
+      return q.then(function () { return api('/k/v1/records', 'DELETE', { app: APP_ID, ids: part }); });
+    }, kintone.Promise.resolve());
+  }
+
+  // 詳細画面の「削除」ボタン
+  function deleteFromButton(id, r) {
+    var withFuture = false;
+    if (fv(r, '繰り返しID', '')) withFuture = confirm(SERIES_DELETE_MSG);
+    else if (!confirm('この予定「' + fv(r, '件名', '') + '」を削除します。よろしいですか？')) return;
+    relatedIds(id, r, withFuture).then(function (rel) {
+      return deleteIds([String(id)].concat(rel.future, rel.comps));
+    }).then(function () {
+      return syncDeals([fv(r, '案件No', '')]).catch(function () { return null; });
+    }).then(function () {
+      location.href = IS_MOBILE ? '/k/m/' + APP_ID + '/' : '/k/' + APP_ID + '/';
+    }).catch(function (err) {
+      alert('削除できませんでした。' + (err && err.message ? '\n' + err.message : ''));
+    });
+  }
+
+  // kintone標準の削除(「…」メニュー・一覧の×)でも、一緒に消すべきレコードを消す
   kintone.events.on(['app.record.detail.delete.submit', 'app.record.index.delete.submit',
     'mobile.app.record.detail.delete.submit'], function (event) {
     var r = event.record;
     if (isCompanion(r)) return event;
     var id = fv(r, '$id', '') || event.recordId;
-    var p = deleteCompanion(id).then(function () {
+    var withFuture = !!fv(r, '繰り返しID', '') && event.type.indexOf('index') < 0 && confirm(SERIES_DELETE_MSG);
+    return relatedIds(id, r, withFuture).then(function (rel) {
+      return deleteIds(rel.future.concat(rel.comps));
+    }).then(function () {
       return syncDeals([fv(r, '案件No', '')], id).catch(function () { return null; });
-    });
-    if (fv(r, '繰り返しID', '') && event.type.indexOf('index') < 0 &&
-      confirm('この予定は繰り返し予定です。\n\nOK: この後の繰り返しもまとめて削除する\nキャンセル: この回だけ削除する')) {
-      p = p.then(function () { return futureOccurrences(r, ['$id']); }).then(function (occs) {
-        var ids = occs.map(function (o) { return fv(o, '$id', ''); }).filter(function (x) { return x !== String(id); });
-        if (!ids.length) return null;
-        // 「予定あり」も一緒に消す
-        return fetchAll(APP_ID, '元予定No in (' + ids.join(',') + ')', ['$id']).then(function (comps) {
-          var all = ids.concat(comps.map(function (c) { return fv(c, '$id', ''); }));
-          return chunks(all, 100).reduce(function (q, part) {
-            return q.then(function () { return api('/k/v1/records', 'DELETE', { app: APP_ID, ids: part }); });
-          }, kintone.Promise.resolve());
-        });
-      });
-    }
-    return p.then(function () { return event; }).catch(function () { return event; });
+    }).then(function () { return event; }).catch(function () { return event; });
   });
 })();
