@@ -241,7 +241,9 @@
       '.sched-panel .ph{display:flex;justify-content:space-between;align-items:center;padding:4px 8px;background:var(--c-bg);border-bottom:2px solid var(--c);font-size:13px}',
       '.sched-panel .ph button{border:none;background:none;cursor:pointer;font-size:14px;color:#475569}',
       '.sched-panel .fc{font-size:12px}',
-      '@media (max-width:700px){.sched-wrap{padding:8px}.sched-grid th.member{width:80px}.sched-ol{display:block}.sched-side{width:auto;border:none;padding:0}.sched-panels{flex-direction:column}.sched-panel{min-width:0}}'
+      // スマホ画面(sched-m)と狭い画面は縦積みにする
+      '.sched-m.sched-wrap{padding:8px}.sched-m .sched-grid th.member{width:72px}.sched-m .sched-ol{display:block}.sched-m .sched-side{width:auto;border:none;padding:0}.sched-m .sched-panels{flex-direction:column}.sched-m .sched-panel{min-width:0}.sched-m .sched-bar button{padding:6px 9px}',
+      '@media (max-width:700px){.sched-wrap{padding:8px}.sched-grid th.member{width:72px}.sched-ol{display:block}.sched-side{width:auto;border:none;padding:0}.sched-panels{flex-direction:column}.sched-panel{min-width:0}}'
     ].join('\n');
     var s = document.createElement('style');
     s.id = 'sched-style';
@@ -344,7 +346,7 @@
     var me = kintone.getLoginUser();
     if (!calState) calState = loadState(me);
 
-    var wrap = el('div', { className: 'sched-wrap' });
+    var wrap = el('div', { className: 'sched-wrap' + (IS_MOBILE ? ' sched-m' : '') });
     var layout = el('div', { className: 'sched-ol' });
     var side = el('div', { className: 'sched-side' });
     var main = el('div', { className: 'sched-main' });
@@ -652,7 +654,7 @@
 
   function renderGroup(root) {
     root.innerHTML = '';
-    var wrap = el('div', { className: 'sched-wrap' });
+    var wrap = el('div', { className: 'sched-wrap' + (IS_MOBILE ? ' sched-m' : '') });
     var bar = el('div', { className: 'sched-bar' });
     var prev = el('button', {}, IS_MOBILE ? '◀ 前日' : '◀ 前週');
     var today = el('button', {}, '今日');
@@ -765,21 +767,44 @@
     injectStyle();
     var calRoot = document.getElementById('sched-root');
     var groupRoot = document.getElementById('sched-group-root');
-    // スマホでカスタマイズビューのHTMLが出ない場合はヘッダーに描画する
-    if (IS_MOBILE && !calRoot && !groupRoot) {
-      var space = kintone.mobile.app.getHeaderSpaceElement();
-      var old = document.getElementById('sched-mobile-root');
-      if (old && old.parentNode) old.parentNode.removeChild(old);
-      if (space && (event.viewName === 'カレンダー' || event.viewName === 'メンバー週表示')) {
-        var holder = el('div', { id: 'sched-mobile-root' });
-        space.appendChild(holder);
-        if (event.viewName === 'カレンダー') calRoot = holder; else groupRoot = holder;
-      }
+    var old = document.getElementById('sched-mobile-root');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    // スマホはカスタマイズ形式の一覧を表示しないため、空の一覧「カレンダー(スマホ)」のヘッダーに描画する
+    if (!calRoot && !groupRoot && event.viewName === MOBILE_VIEW_NAME) {
+      var space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.getHeaderSpaceElement();
+      if (space) renderMobileTabs(space);
+      return event;
     }
     if (calRoot) renderCalendar(calRoot);
     if (groupRoot) renderGroup(groupRoot);
     return event;
   });
+
+  var MOBILE_VIEW_NAME = 'カレンダー(スマホ)';
+  var MOBILE_TAB_KEY = 'sched34-mobile-tab';
+
+  function renderMobileTabs(space) {
+    var holder = el('div', { id: 'sched-mobile-root' });
+    var bar = el('div', { className: 'sched-bar', style: 'margin:8px 8px 0' });
+    var tabs = el('span', { className: 'sched-views', style: 'display:flex;width:100%' });
+    bar.appendChild(tabs);
+    var body = el('div');
+    var tab = 'cal';
+    try { tab = localStorage.getItem(MOBILE_TAB_KEY) || 'cal'; } catch (e) { tab = 'cal'; }
+    [['cal', 'カレンダー'], ['group', 'メンバー']].forEach(function (t) {
+      var b = el('button', { className: t[0] === tab ? 'on' : '', style: 'flex:1' }, t[1]);
+      b.addEventListener('click', function () {
+        try { localStorage.setItem(MOBILE_TAB_KEY, t[0]); } catch (e) { /* 保存できなくても動く */ }
+        holder.parentNode.removeChild(holder);
+        renderMobileTabs(space);
+      });
+      tabs.appendChild(b);
+    });
+    holder.appendChild(bar);
+    holder.appendChild(body);
+    space.appendChild(holder);
+    if (tab === 'group') renderGroup(body); else renderCalendar(body);
+  }
 
   // ---------- 入力画面 ----------
   var ACTIVITY_APP_ID = 17;
