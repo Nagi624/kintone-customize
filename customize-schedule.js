@@ -57,7 +57,8 @@
     return page(0);
   }
 
-  var EVENT_FIELDS = ['$id', '件名', '種類', '終日', '開始日時', '終了日時', '参加者', '場所', '会社名', '案件名', '公開区分', '元予定No'];
+  var EVENT_FIELDS = ['$id', '件名', '種類', '終日', '開始日時', '終了日時', '参加者', '場所', '会社名', '案件名', '公開区分', '元予定No',
+    '出欠', '実施状況', '繰り返しID'];
 
   // 範囲[start, end)に重なる予定。自分が元の非公開予定を見られる場合、その「予定あり」は除く
   function fetchEvents(start, end) {
@@ -101,6 +102,36 @@
   function typeOf(r) { return isCompanion(r) ? '予定あり' : fv(r, '種類', 'その他'); }
   function participantCodes(r) { return fv(r, '参加者', []).map(function (u) { return u.code; }); }
 
+  // 出欠表からその人の回答を取り出す(行が無ければ null)
+  function answerOf(r, code) {
+    var rows = fv(r, '出欠', []);
+    for (var i = 0; i < rows.length; i++) {
+      var u = fv(rows[i].value, '出欠_参加者', [])[0];
+      if (u && u.code === code) return fv(rows[i].value, '出欠_回答', '未回答');
+    }
+    return null;
+  }
+
+  // 完了・中止・繰り返しの印を件名の前に付ける
+  function decorate(r, title) {
+    if (isCompanion(r)) return title;
+    var st = fv(r, '実施状況', '予定');
+    if (fv(r, '繰り返しID', '')) title = '↻' + title;
+    if (st === '完了') title = '✓' + title;
+    if (st === '中止') title = '[中止]' + title;
+    return title;
+  }
+
+  // 1人分の予定表で、その人が辞退/未回答の予定や中止の予定を見分けられるようにするクラス
+  function stateClasses(r, code) {
+    if (isCompanion(r)) return [];
+    if (fv(r, '実施状況', '予定') === '中止') return ['sched-declined'];
+    var a = code ? answerOf(r, code) : null;
+    if (a === '辞退') return ['sched-declined'];
+    if (a === '未回答') return ['sched-pending'];
+    return [];
+  }
+
   // ---------- 画面遷移 ----------
   function openRecord(id) {
     location.href = IS_MOBILE ? '/k/m/' + APP_ID + '/show?record=' + id : '/k/' + APP_ID + '/show#record=' + id;
@@ -124,16 +155,22 @@
         if (!compId) return null;
         return kintone.api(kintone.api.url('/k/v1/records', true), 'DELETE', { app: APP_ID, ids: [compId] });
       }
-      var body = {
-        件名: { value: '予定あり' }, 種類: { value: 'その他' },
-        開始日時: { value: fv(rec, '開始日時', null) }, 終了日時: { value: fv(rec, '終了日時', null) },
-        終日: { value: fv(rec, '終日', []) },
-        参加者: { value: fv(rec, '参加者', []).map(function (u) { return { code: u.code }; }) },
-        公開区分: { value: '公開' }, 元予定No: { value: String(id) }
-      };
+      var body = companionBody(id, rec);
       if (compId) return kintone.api(kintone.api.url('/k/v1/record', true), 'PUT', { app: APP_ID, id: compId, record: body });
       return kintone.api(kintone.api.url('/k/v1/record', true), 'POST', { app: APP_ID, record: body });
     });
+  }
+
+  // 「予定あり」レコードの中身(時間と参加者だけ。件名・内容・顧客などは写さない)
+  function companionBody(id, rec) {
+    return {
+      件名: { value: '予定あり' }, 種類: { value: 'その他' },
+      開始日時: { value: fv(rec, '開始日時', null) }, 終了日時: { value: fv(rec, '終了日時', null) },
+      終日: { value: fv(rec, '終日', []) },
+      参加者: { value: fv(rec, '参加者', []).map(function (u) { return { code: u.code }; }) },
+      公開区分: { value: '公開' }, 元予定No: { value: String(id) },
+      リマインダー: { value: [] }, 繰り返し: { value: 'なし' }
+    };
   }
 
   function deleteCompanion(id) {
@@ -169,6 +206,14 @@
       '.fc .fc-day-sat .fc-col-header-cell-cushion,.fc .fc-day-sat .fc-daygrid-day-number{color:#2563eb}',
       '.fc .fc-day-sun .fc-col-header-cell-cushion,.fc .fc-day-sun .fc-daygrid-day-number,.fc .sched-holiday .fc-daygrid-day-number,.fc .sched-holiday .fc-col-header-cell-cushion{color:#dc2626}',
       '.fc .fc-event{cursor:pointer}',
+      '.sched-declined{opacity:.45;text-decoration:line-through}',
+      '.fc .sched-pending{background-image:repeating-linear-gradient(45deg,rgba(255,255,255,.4) 0 5px,transparent 5px 10px)}',
+      '.sched-chip.sched-pending{border-left-style:dashed}',
+      '.sched-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0}',
+      '.sched-actions button{padding:6px 12px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:13px}',
+      '.sched-actions button.on{background:#1e293b;color:#fff;border-color:#1e293b}',
+      '.sched-actions button.primary{background:#2563eb;color:#fff;border-color:#2563eb}',
+      '.sched-actions .lbl{font-size:13px;color:#475569}',
       // Outlook風レイアウト(左: ミニカレンダー+メンバー、右: 人ごとの予定表を横並び)
       '.sched-ol{display:flex;gap:12px;align-items:flex-start}',
       '.sched-side{width:230px;flex:0 0 230px;border-right:1px solid #e2e8f0;padding-right:10px}',
@@ -275,9 +320,11 @@
       var title = isCompanion(r) ? '予定あり' : fv(r, '件名', '');
       if (!isCompanion(r) && fv(r, '公開区分', '') === '非公開') title = '🔒' + title;
       if (!isCompanion(r) && fv(r, '会社名', '')) title += ' / ' + fv(r, '会社名', '');
+      title = decorate(r, title);
       if (showNames) title = '[' + fv(r, '参加者', []).map(function (u) { return u.name; }).join('・') + '] ' + title;
       evs.push({
         id: fv(r, '$id', ''), title: title, allDay: allDay,
+        classNames: stateClasses(r, codes.length === 1 ? codes[0] : null),
         start: allDay ? ymd(s) : s, end: allDay ? ymd(addDays(e, 1)) : e,
         backgroundColor: TYPE_COLORS[typeOf(r)], borderColor: TYPE_COLORS[typeOf(r)],
         editable: !isCompanion(r), extendedProps: { rec: r }
@@ -587,6 +634,12 @@
         var merged = Object.assign({}, rec, body);
         return syncCompanion(ev.id, merged);
       })
+      .then(function () {
+        var me = kintone.getLoginUser().code;
+        var others = participantCodes(rec).filter(function (c) { return c !== me; });
+        var merged = Object.assign({}, rec, body);
+        return postComment(ev.id, '予定の日時が変更されました。\n件名: ' + fv(rec, '件名', '') + '\n日時: ' + whenText(merged), others);
+      })
       .then(function () { refetchAll(); })
       .catch(function (err) {
         info.revert();
@@ -667,9 +720,9 @@
             }).forEach(function (r) {
               var s = new Date(fv(r, '開始日時', ''));
               var label = isAllDay(r) ? '終日' : (s >= dayStart ? hm(s) : '(続き)');
-              var name = isCompanion(r) ? '予定あり' : (fv(r, '公開区分', '') === '非公開' ? '🔒' : '') + fv(r, '件名', '');
+              var name = decorate(r, isCompanion(r) ? '予定あり' : (fv(r, '公開区分', '') === '非公開' ? '🔒' : '') + fv(r, '件名', ''));
               var extra = !isCompanion(r) && fv(r, '会社名', '') ? ' / ' + fv(r, '会社名', '') : '';
-              var chip = el('span', { className: 'sched-chip', style: '--c:' + TYPE_COLORS[typeOf(r)], title: label + ' ' + name + extra });
+              var chip = el('span', { className: ['sched-chip'].concat(stateClasses(r, m.code)).join(' '), style: '--c:' + TYPE_COLORS[typeOf(r)], title: label + ' ' + name + extra });
               chip.appendChild(el('span', { className: 't' }, label));
               chip.appendChild(document.createTextNode(name + extra));
               chip.addEventListener('click', function (ev) { ev.stopPropagation(); openRecord(fv(r, '$id', '')); });
@@ -729,17 +782,33 @@
   });
 
   // ---------- 入力画面 ----------
+  var ACTIVITY_APP_ID = 17;
+  var MAX_OCCURRENCES = 200;
   var duration = 3600000;
+  var prevState = null;      // 編集前の参加者・日時(招待/変更の通知に使う)
+  var seriesScope = 'this';  // 繰り返し予定の編集を「今後すべて」に反映するか
 
   function setShown(code, shown) {
     if (IS_MOBILE) kintone.mobile.app.record.setFieldShown(code, shown);
     else kintone.app.record.setFieldShown(code, shown);
   }
 
+  function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
+
+  function disableAttendanceRows(r) {
+    fv(r, '出欠', []).forEach(function (row) {
+      ['出欠_参加者', '出欠_回答', '出欠_コメント'].forEach(function (c) { if (row.value[c]) row.value[c].disabled = true; });
+    });
+  }
+
   kintone.events.on(['app.record.create.show', 'mobile.app.record.create.show'], function (event) {
     detectEnv(event);
     var r = event.record;
-    r.元予定No.value = ''; // 再利用で「予定あり」をコピーした場合に備えて必ず空にする
+    // 再利用(コピー)で作るときに、自動で入る欄を持ち越さない
+    r.元予定No.value = '';
+    r.繰り返しID.value = '';
+    r.活動履歴No.value = '';
+    r.実施状況.value = '予定';
     var raw = null;
     try { raw = sessionStorage.getItem(PREFILL_KEY); sessionStorage.removeItem(PREFILL_KEY); } catch (e) { raw = null; }
     if (raw) {
@@ -754,22 +823,37 @@
       r.終了日時.value = toKintoneDT(new Date(s.getTime() + 3600000));
     }
     rememberDuration(r);
-    setShown('元予定No', false);
+    prevState = null;
+    ['元予定No', '繰り返しID', '活動履歴No', '出欠'].forEach(function (c) { setShown(c, false); });
     r.元予定No.disabled = true;
+    r.繰り返しID.disabled = true;
+    r.活動履歴No.disabled = true;
     return event;
   });
 
   kintone.events.on(['app.record.edit.show', 'mobile.app.record.edit.show'], function (event) {
     detectEnv(event);
-    rememberDuration(event.record);
-    setShown('元予定No', !!fv(event.record, '元予定No', ''));
-    event.record.元予定No.disabled = true;
+    var r = event.record;
+    rememberDuration(r);
+    prevState = {
+      codes: participantCodes(r), start: fv(r, '開始日時', ''), end: fv(r, '終了日時', ''), status: fv(r, '実施状況', '予定')
+    };
+    setShown('元予定No', !!fv(r, '元予定No', ''));
+    setShown('繰り返しID', false);
+    ['元予定No', '繰り返しID', '活動履歴No', '繰り返し', '繰り返し終了日'].forEach(function (c) { r[c].disabled = true; });
+    disableAttendanceRows(r);
     return event;
   });
 
   kintone.events.on(['app.record.detail.show', 'mobile.app.record.detail.show'], function (event) {
     detectEnv(event);
-    setShown('元予定No', !!fv(event.record, '元予定No', ''));
+    injectStyle();
+    var r = event.record;
+    setShown('元予定No', !!fv(r, '元予定No', ''));
+    setShown('繰り返しID', false);
+    setShown('活動履歴No', !!fv(r, '活動履歴No', ''));
+    if (fv(r, '繰り返し', 'なし') === 'なし') { setShown('繰り返し', false); setShown('繰り返し終了日', false); }
+    drawDetailActions(event);
     return event;
   });
 
@@ -817,7 +901,7 @@
     detectEnv(event);
     var dealNo = fv(event.record, '案件No', '');
     if (!dealNo) return event;
-    kintone.api(kintone.api.url('/k/v1/record', true), 'GET', { app: DEAL_APP_ID, id: dealNo }).then(function (resp) {
+    api('/k/v1/record', 'GET', { app: DEAL_APP_ID, id: dealNo }).then(function (resp) {
       var custNo = fv(resp.record, '顧客No_', '');
       if (!custNo) return;
       var cur = recApi().get();
@@ -829,31 +913,382 @@
     return event;
   });
 
+  // 参加者に合わせて出欠表の行をそろえる(既存の回答は残す。主催者=作成者は最初から「承諾」)
+  function syncAttendance(r, organizerCode, fresh) {
+    var byCode = {};
+    // 新規作成(再利用を含む)では、コピー元の回答を持ち越さない
+    (fresh ? [] : fv(r, '出欠', [])).forEach(function (row) {
+      var u = fv(row.value, '出欠_参加者', [])[0];
+      if (u) byCode[u.code] = row;
+    });
+    r.出欠.value = fv(r, '参加者', []).map(function (u) {
+      if (byCode[u.code]) return byCode[u.code];
+      return { value: {
+        出欠_参加者: { type: 'USER_SELECT', value: [{ code: u.code, name: u.name }] },
+        出欠_回答: { type: 'DROP_DOWN', value: u.code === organizerCode ? '承諾' : '未回答' },
+        出欠_コメント: { type: 'SINGLE_LINE_TEXT', value: '' }
+      } };
+    });
+  }
+
   kintone.events.on(['app.record.create.submit', 'app.record.edit.submit',
     'mobile.app.record.create.submit', 'mobile.app.record.edit.submit'], function (event) {
+    detectEnv(event);
     var r = event.record;
+    var isCreate = event.type.indexOf('create') >= 0;
     var s = Date.parse(fv(r, '開始日時', ''));
     var e = Date.parse(fv(r, '終了日時', ''));
     if (!isNaN(s) && !isNaN(e) && e < s) {
       r.終了日時.error = '終了は開始より後の日時にしてください';
       event.error = '終了日時を確認してください';
+      return event;
+    }
+    if (isCreate && fv(r, '繰り返し', 'なし') !== 'なし') {
+      var endDay = fv(r, '繰り返し終了日', '');
+      if (!endDay) {
+        r.繰り返し終了日.error = '繰り返す場合は終了日を入れてください';
+        event.error = '繰り返しの終了日を入れてください';
+        return event;
+      }
+      if (endDay <= ymd(new Date(s))) {
+        r.繰り返し終了日.error = '開始日より後の日付にしてください';
+        event.error = '繰り返しの終了日を確認してください';
+        return event;
+      }
+      r.繰り返しID.value = 'R' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+    }
+    var organizer = isCreate ? kintone.getLoginUser().code : (fv(r, '作成者', {}).code || kintone.getLoginUser().code);
+    syncAttendance(r, organizer, isCreate);
+    seriesScope = 'this';
+    if (!isCreate && fv(r, '繰り返しID', '') && !isCompanion(r)) {
+      seriesScope = confirm('この予定は繰り返し予定です。\n\nOK: この回と、これより後の回すべてに変更を反映する\nキャンセル: この回だけ変更する') ? 'future' : 'this';
     }
     return event;
   });
 
   kintone.events.on(['app.record.create.submit.success', 'app.record.edit.submit.success',
     'mobile.app.record.create.submit.success', 'mobile.app.record.edit.submit.success'], function (event) {
-    if (isCompanion(event.record)) return event;
-    var id = event.recordId || fv(event.record, '$id', '');
-    return syncCompanion(id, event.record).then(function () { return event; }).catch(function (err) {
-      alert('予定は保存しましたが、非公開予定の「予定あり」表示を更新できませんでした。' + (err && err.message ? '\n' + err.message : ''));
-      return event;
-    });
+    detectEnv(event);
+    var r = event.record;
+    if (isCompanion(r)) return event;
+    var isCreate = event.type.indexOf('create') >= 0;
+    var id = event.recordId || fv(r, '$id', '');
+    var notes = [];
+    return syncCompanion(id, r)
+      .catch(function () { notes.push('非公開予定の「予定あり」表示を更新できませんでした。'); })
+      .then(function () {
+        if (isCreate && fv(r, '繰り返しID', '')) return createSeries(id, r).then(function (n) { if (n.msg) notes.push(n.msg); });
+        if (!isCreate && seriesScope === 'future') return updateFutureSeries(id, r).then(function (n) { if (n) notes.push('これより後の' + n + '件にも反映しました。'); });
+        return null;
+      })
+      .catch(function (err) { notes.push('繰り返し予定の作成・更新でエラーが出ました。' + (err && err.message ? err.message : '')); })
+      .then(function () { return notifyParticipants(id, r, isCreate); })
+      .catch(function () { notes.push('参加者への通知(コメント)を送れませんでした。'); })
+      .then(function () {
+        if (notes.length) alert('予定を保存しました。\n' + notes.join('\n'));
+        return event;
+      });
   });
 
+  // ---------- 繰り返し ----------
+  function occurrenceDates(r, holidays) {
+    var rule = fv(r, '繰り返し', 'なし');
+    var s = new Date(fv(r, '開始日時', ''));
+    var parts = fv(r, '繰り返し終了日', '').split('-');
+    var limit = new Date(+parts[0], +parts[1] - 1, +parts[2], 23, 59, 59);
+    var out = [];
+    for (var i = 1; i < 2000 && out.length < MAX_OCCURRENCES; i++) {
+      var d;
+      if (rule === '毎日' || rule === '毎日(平日のみ)') d = addDays(s, i);
+      else if (rule === '毎週') d = addDays(s, 7 * i);
+      else if (rule === '隔週') d = addDays(s, 14 * i);
+      else if (rule === '毎月(同じ日)') {
+        d = new Date(s.getFullYear(), s.getMonth() + i, s.getDate(), s.getHours(), s.getMinutes());
+        if (d.getDate() !== s.getDate()) continue; // 31日などが無い月は飛ばす
+      } else break;
+      if (d > limit) break;
+      if (rule === '毎日(平日のみ)' && (d.getDay() === 0 || d.getDay() === 6 || holidays[ymd(d)])) continue;
+      out.push(d);
+    }
+    return out;
+  }
+
+  function attendanceForApi(rows) {
+    return rows.map(function (row) {
+      var v = row.value;
+      var out = { value: {
+        出欠_参加者: { value: fv(v, '出欠_参加者', []).map(function (u) { return { code: u.code }; }) },
+        出欠_回答: { value: fv(v, '出欠_回答', '未回答') },
+        出欠_コメント: { value: fv(v, '出欠_コメント', '') }
+      } };
+      if (row.id) out.id = row.id;
+      return out;
+    });
+  }
+
+  // 繰り返しの各回にコピーする内容(日時以外)
+  function sharedFields(r) {
+    return {
+      件名: { value: fv(r, '件名', '') }, 種類: { value: fv(r, '種類', 'その他') }, 終日: { value: fv(r, '終日', []) },
+      参加者: { value: fv(r, '参加者', []).map(function (u) { return { code: u.code }; }) },
+      場所: { value: fv(r, '場所', '') }, 顧客No: { value: fv(r, '顧客No', '') }, 案件No: { value: fv(r, '案件No', '') },
+      内容: { value: fv(r, '内容', '') }, 公開区分: { value: fv(r, '公開区分', '公開') },
+      リマインダー: { value: fv(r, 'リマインダー', []) }
+    };
+  }
+
+  function chunks(arr, n) { var out = []; for (var i = 0; i < arr.length; i += n) out.push(arr.slice(i, i + n)); return out; }
+
+  function createSeries(id, r) {
+    return fetchHolidays().then(function (holidays) {
+      var dates = occurrenceDates(r, holidays);
+      var s = new Date(fv(r, '開始日時', ''));
+      var e = new Date(fv(r, '終了日時', ''));
+      var shared = sharedFields(r);
+      var recs = dates.map(function (d) {
+        var delta = d.getTime() - s.getTime();
+        var rec = Object.assign({}, shared, {
+          開始日時: { value: toKintoneDT(d) }, 終了日時: { value: toKintoneDT(new Date(e.getTime() + delta)) },
+          繰り返し: { value: fv(r, '繰り返し', 'なし') }, 繰り返し終了日: { value: fv(r, '繰り返し終了日', '') },
+          繰り返しID: { value: fv(r, '繰り返しID', '') }, 実施状況: { value: '予定' },
+          出欠: { value: attendanceForApi(fv(r, '出欠', [])).map(function (row) { return { value: row.value }; }) }
+        });
+        if (!rec.顧客No.value) delete rec.顧客No;
+        if (!rec.案件No.value) delete rec.案件No;
+        return rec;
+      });
+      var newIds = [];
+      return chunks(recs, 100).reduce(function (p, part) {
+        return p.then(function () {
+          return api('/k/v1/records', 'POST', { app: APP_ID, records: part }).then(function (resp) { newIds = newIds.concat(resp.ids); });
+        });
+      }, kintone.Promise.resolve()).then(function () {
+        if (fv(r, '公開区分', '公開') !== '非公開') return null;
+        var comps = newIds.map(function (nid, i) { return companionBody(nid, { 開始日時: recs[i].開始日時, 終了日時: recs[i].終了日時, 終日: recs[i].終日, 参加者: { value: fv(r, '参加者', []) }, 公開区分: { value: '非公開' } }); });
+        return chunks(comps, 100).reduce(function (p, part) {
+          return p.then(function () { return api('/k/v1/records', 'POST', { app: APP_ID, records: part }); });
+        }, kintone.Promise.resolve());
+      }).then(function () {
+        var msg = '繰り返しで、この後に' + newIds.length + '件の予定を作りました。';
+        if (newIds.length >= MAX_OCCURRENCES) msg += '(一度に作れるのは' + MAX_OCCURRENCES + '件までです。続きは終了日を延ばして別に登録してください)';
+        return { msg: msg };
+      });
+    });
+  }
+
+  // 同じ繰り返しの、この回より後の予定を取得する
+  function futureOccurrences(r, fields) {
+    var q = '繰り返しID = "' + fv(r, '繰り返しID', '') + '" and 元予定No = "" and 開始日時 > "' + fv(r, '開始日時', '') + '" order by 開始日時 asc';
+    return fetchAll(APP_ID, q, fields);
+  }
+
+  function updateFutureSeries(id, r) {
+    var s = new Date(fv(r, '開始日時', ''));
+    var dur = new Date(fv(r, '終了日時', '')).getTime() - s.getTime();
+    var shared = sharedFields(r);
+    var srcRows = fv(r, '出欠', []);
+    return futureOccurrences(r, ['$id', '開始日時', '出欠']).then(function (occs) {
+      var updates = occs.filter(function (o) { return fv(o, '$id', '') !== String(id); }).map(function (o) {
+        var od = new Date(fv(o, '開始日時', ''));
+        // 日付はその回のまま、時刻だけこの回に合わせる
+        var ns = new Date(od.getFullYear(), od.getMonth(), od.getDate(), s.getHours(), s.getMinutes());
+        // 出欠: その回で回答済みの人は回答を残し、新しい参加者は未回答で追加
+        var old = {};
+        fv(o, '出欠', []).forEach(function (row) { var u = fv(row.value, '出欠_参加者', [])[0]; if (u) old[u.code] = row; });
+        var rows = srcRows.map(function (row) {
+          var u = fv(row.value, '出欠_参加者', [])[0];
+          return u && old[u.code] ? old[u.code] : { value: row.value };
+        });
+        var rec = Object.assign({}, shared, {
+          開始日時: { value: toKintoneDT(ns) }, 終了日時: { value: toKintoneDT(new Date(ns.getTime() + dur)) },
+          出欠: { value: attendanceForApi(rows).map(function (x) { return { value: x.value }; }) }
+        });
+        if (!rec.顧客No.value) rec.顧客No = { value: '' };
+        if (!rec.案件No.value) rec.案件No = { value: '' };
+        return { id: fv(o, '$id', ''), record: rec };
+      });
+      return chunks(updates, 100).reduce(function (p, part) {
+        return p.then(function () { return api('/k/v1/records', 'PUT', { app: APP_ID, records: part }); });
+      }, kintone.Promise.resolve()).then(function () {
+        return updates.reduce(function (p, u) {
+          return p.then(function () { return syncCompanion(u.id, Object.assign({}, u.record, { 参加者: { value: fv(r, '参加者', []) } })); });
+        }, kintone.Promise.resolve());
+      }).then(function () { return updates.length; });
+    });
+  }
+
+  // ---------- 参加者への通知(レコードのコメントで@メンションする) ----------
+  function whenText(r) {
+    var s = new Date(fv(r, '開始日時', ''));
+    var e = new Date(fv(r, '終了日時', ''));
+    var d = (s.getMonth() + 1) + '/' + s.getDate() + '(' + WEEKDAYS[s.getDay()] + ')';
+    if (isAllDay(r)) return d + ' 終日' + (ymd(s) !== ymd(e) ? '〜' + (e.getMonth() + 1) + '/' + e.getDate() : '');
+    return d + ' ' + hm(s) + '〜' + (ymd(s) !== ymd(e) ? (e.getMonth() + 1) + '/' + e.getDate() + ' ' : '') + hm(e);
+  }
+
+  function postComment(id, text, codes) {
+    if (!codes.length) return kintone.Promise.resolve();
+    return api('/k/v1/record/comment', 'POST', {
+      app: APP_ID, record: id,
+      comment: { text: text, mentions: codes.map(function (c) { return { code: c, type: 'USER' }; }) }
+    });
+  }
+
+  function notifyParticipants(id, r, isCreate) {
+    var me = kintone.getLoginUser().code;
+    var others = participantCodes(r).filter(function (c) { return c !== me; });
+    if (!others.length) return kintone.Promise.resolve();
+    var info = '件名: ' + fv(r, '件名', '') + '\n日時: ' + whenText(r) +
+      (fv(r, '場所', '') ? '\n場所: ' + fv(r, '場所', '') : '') +
+      (fv(r, '繰り返しID', '') && isCreate ? '\n繰り返し: ' + fv(r, '繰り返し', '') + '(' + fv(r, '繰り返し終了日', '') + 'まで)' : '');
+    if (isCreate) {
+      return postComment(id, '予定に招待しました。\n' + info + '\n\n予定を開いて「出欠」のボタンから回答してください。', others);
+    }
+    if (!prevState) return kintone.Promise.resolve();
+    var added = others.filter(function (c) { return prevState.codes.indexOf(c) < 0; });
+    var stayed = others.filter(function (c) { return prevState.codes.indexOf(c) >= 0; });
+    var p = postComment(id, '予定に招待しました。\n' + info + '\n\n予定を開いて「出欠」のボタンから回答してください。', added);
+    var st = fv(r, '実施状況', '予定');
+    if (st === '中止' && prevState.status !== '中止') {
+      return p.then(function () { return postComment(id, 'この予定は中止になりました。\n' + info, stayed); });
+    }
+    if (prevState.start !== fv(r, '開始日時', '') || prevState.end !== fv(r, '終了日時', '')) {
+      return p.then(function () {
+        return postComment(id, '予定の日時が変更されました。\n' + info + (seriesScope === 'future' ? '\n(これより後の繰り返しも同じ時刻に変更)' : ''), stayed);
+      });
+    }
+    return p;
+  }
+
+  // ---------- 詳細画面のボタン(出欠の回答・訪問完了→活動履歴) ----------
+  function headerSpace() {
+    return IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.record.getHeaderMenuSpaceElement();
+  }
+
+  function drawDetailActions(event) {
+    var old = document.getElementById('sched-detail-actions');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var r = event.record;
+    if (isCompanion(r)) return;
+    var space = headerSpace();
+    if (!space) return;
+    var box = el('div', { id: 'sched-detail-actions', className: 'sched-actions', style: IS_MOBILE ? 'padding:0 12px' : '' });
+    var id = event.recordId || fv(r, '$id', '');
+    var me = kintone.getLoginUser();
+
+    var mine = answerOf(r, me.code);
+    if (mine !== null) {
+      box.appendChild(el('span', { className: 'lbl' }, '出欠:'));
+      ['承諾', '仮承諾', '辞退'].forEach(function (a) {
+        var b = el('button', { className: mine === a ? 'on' : '' }, a);
+        b.addEventListener('click', function () { answer(id, r, a); });
+        box.appendChild(b);
+      });
+    }
+
+    if (fv(r, '種類', '') === '訪問' || fv(r, '種類', '') === '外出') {
+      var actNo = fv(r, '活動履歴No', '');
+      var ab = el('button', { className: 'primary' }, actNo ? '活動履歴を開く' : '訪問完了 → 活動履歴を作成');
+      ab.addEventListener('click', function () {
+        if (actNo) { location.href = IS_MOBILE ? '/k/m/' + ACTIVITY_APP_ID + '/show?record=' + actNo : '/k/' + ACTIVITY_APP_ID + '/show#record=' + actNo; return; }
+        createActivity(id, r);
+      });
+      box.appendChild(ab);
+    }
+    if (box.children.length) space.appendChild(box);
+  }
+
+  function answer(id, r, value) {
+    var comment = prompt('「' + value + '」で回答します。主催者へのひとこと(空欄でも可):', '');
+    if (comment === null) return;
+    var me = kintone.getLoginUser();
+    var applyFuture = fv(r, '繰り返しID', '') ? confirm('この後の繰り返し予定にも同じ回答をしますか？\n\nOK: この後もすべて「' + value + '」\nキャンセル: この回だけ') : false;
+
+    function updateOne(recId) {
+      return api('/k/v1/record', 'GET', { app: APP_ID, id: recId }).then(function (resp) {
+        var rows = fv(resp.record, '出欠', []);
+        rows.forEach(function (row) {
+          var u = fv(row.value, '出欠_参加者', [])[0];
+          if (u && u.code === me.code) {
+            row.value.出欠_回答.value = value;
+            row.value.出欠_コメント.value = comment;
+          }
+        });
+        return api('/k/v1/record', 'PUT', { app: APP_ID, id: recId, record: { 出欠: { value: attendanceForApi(rows) } } });
+      });
+    }
+
+    var p = updateOne(id);
+    if (applyFuture) {
+      p = p.then(function () { return futureOccurrences(r, ['$id']); }).then(function (occs) {
+        return occs.reduce(function (q, o) { return q.then(function () { return updateOne(fv(o, '$id', '')); }); }, kintone.Promise.resolve());
+      });
+    }
+    p.then(function () {
+      var organizer = fv(r, '作成者', {}).code;
+      if (!organizer || organizer === me.code) return null;
+      return postComment(id, me.name + 'さんが「' + value + '」と回答しました。' + (applyFuture ? '(この後の繰り返しも同じ)' : '') + (comment ? '\n' + comment : ''), [organizer]);
+    }).then(function () { location.reload(); })
+      .catch(function (err) { alert('回答を保存できませんでした。' + (err && err.message ? '\n' + err.message : '')); });
+  }
+
+  // 訪問の予定から活動履歴(app17)を作り、予定を「完了」にして、活動履歴の編集画面を開く
+  function createActivity(id, r) {
+    if (!confirm('この予定を「完了」にして、活動履歴を作成します。よろしいですか？\n(作成後、活動履歴の画面で報告内容を書いてください)')) return;
+    var me = kintone.getLoginUser();
+    var custNo = fv(r, '顧客No', '');
+    var kindP;
+    if (fv(r, '種類', '') !== '訪問' || !custNo) kindP = kintone.Promise.resolve('その他');
+    else {
+      kindP = api('/k/v1/records', 'GET', {
+        app: ACTIVITY_APP_ID, fields: ['$id'],
+        query: '顧客No = "' + custNo + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") limit 1'
+      }).then(function (resp) { return resp.records.length ? '商談（2回目以降）' : '商談（初回）'; });
+    }
+    kindP.then(function (kind) {
+      var body = fv(r, '内容', '');
+      var rec = {
+        タイトル: { value: fv(r, '件名', '') },
+        対応日付: { value: ymd(new Date(fv(r, '開始日時', ''))) },
+        対応者: { value: [{ code: me.code }] },
+        対応種別: { value: kind },
+        内容: { value: (body ? body + '\n\n' : '') + '(スケジュールNo.' + id + ' から作成)' }
+      };
+      if (fv(r, '会社名', '')) rec.会社名 = { value: fv(r, '会社名', '') };
+      if (fv(r, '案件名', '')) rec.案件名 = { value: fv(r, '案件名', '') };
+      return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: rec });
+    }).then(function (resp) {
+      var actId = resp.id;
+      return api('/k/v1/record', 'PUT', { app: APP_ID, id: id, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(actId) } } })
+        .then(function () { return actId; });
+    }).then(function (actId) {
+      location.href = IS_MOBILE ? '/k/m/' + ACTIVITY_APP_ID + '/show?record=' + actId : '/k/' + ACTIVITY_APP_ID + '/show#record=' + actId + '&mode=edit';
+    }).catch(function (err) {
+      alert('活動履歴を作成できませんでした。' + (err && err.message ? '\n' + err.message : ''));
+    });
+  }
+
+  // ---------- 削除 ----------
   kintone.events.on(['app.record.detail.delete.submit', 'app.record.index.delete.submit',
     'mobile.app.record.detail.delete.submit'], function (event) {
-    if (isCompanion(event.record)) return event;
-    return deleteCompanion(fv(event.record, '$id', '')).then(function () { return event; }).catch(function () { return event; });
+    var r = event.record;
+    if (isCompanion(r)) return event;
+    var id = fv(r, '$id', '') || event.recordId;
+    var p = deleteCompanion(id);
+    if (fv(r, '繰り返しID', '') && event.type.indexOf('index') < 0 &&
+      confirm('この予定は繰り返し予定です。\n\nOK: この後の繰り返しもまとめて削除する\nキャンセル: この回だけ削除する')) {
+      p = p.then(function () { return futureOccurrences(r, ['$id']); }).then(function (occs) {
+        var ids = occs.map(function (o) { return fv(o, '$id', ''); }).filter(function (x) { return x !== String(id); });
+        if (!ids.length) return null;
+        // 「予定あり」も一緒に消す
+        return fetchAll(APP_ID, '元予定No in (' + ids.join(',') + ')', ['$id']).then(function (comps) {
+          var all = ids.concat(comps.map(function (c) { return fv(c, '$id', ''); }));
+          return chunks(all, 100).reduce(function (q, part) {
+            return q.then(function () { return api('/k/v1/records', 'DELETE', { app: APP_ID, ids: part }); });
+          }, kintone.Promise.resolve());
+        });
+      });
+    }
+    return p.then(function () { return event; }).catch(function () { return event; });
   });
 })();
