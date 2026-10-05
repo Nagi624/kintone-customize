@@ -9,6 +9,7 @@
  * - ネタリストの「架電履歴」サブテーブルは、顧客管理への登録と同時に活動履歴(app17)へ
  *   1行=1レコードとして実登録する(対応種別は「電話」固定、会社名はルックアップで顧客管理と自動紐付け)。
  *   これにより顧客管理側の「活動履歴一覧」に転換前の接触履歴がそのまま表示される
+ * - スケジュール(app34)でこのネタに紐づいていた予定は、新しい顧客に付け替える
  * - 顧客管理への登録に成功したら、ネタリスト側の元レコードは削除する
  *   (コピーではなく「移動」として扱う)
  * - 誤操作防止のため、作成前に確認ダイアログを一度挟む(削除される旨も明記)
@@ -20,6 +21,7 @@
   var CUSTOMER_APP_ID = "18";
   var ACTIVITY_APP_ID = "17";
   var TANTOSHA_APP_ID = "20";
+  var SCHEDULE_APP_ID = "34";
   var DEFAULT_CUSTOMER_RANK = "D";
   var IS_MOBILE = false;
 
@@ -169,6 +171,27 @@
     return null;
   }
 
+  // スケジュール(app34)でこのネタに紐づいていた予定を、新しい顧客に付け替える
+  // (ネタのレコードは削除されるため。見られない予定やエラーは無視して移行は続ける)
+  function relinkSchedules(leadId, customerId) {
+    if (!leadId) return Promise.resolve();
+    return kintone.api(kintone.api.url("/k/v1/records", true), "GET", {
+      app: SCHEDULE_APP_ID,
+      query: 'ネタNo = "' + leadId + '" limit 500',
+      fields: ["$id"],
+    }).then(function (resp) {
+      if (!resp.records.length) return null;
+      return kintone.api(kintone.api.url("/k/v1/records", true), "PUT", {
+        app: SCHEDULE_APP_ID,
+        records: resp.records.map(function (r) {
+          return { id: r.$id.value, record: { "顧客No": { value: String(customerId) }, "ネタNo": { value: "" }, "ネタ会社名": { value: "" } } };
+        }),
+      });
+    }).catch(function (err) {
+      console.warn("スケジュールの予定をネタから顧客へ付け替えられませんでした:", err);
+    });
+  }
+
   function deleteLeadRecord(leadId) {
     return kintone.api(kintone.api.url("/k/v1/records", true), "DELETE", {
       app: LEAD_APP_ID,
@@ -216,6 +239,9 @@
             .catch(function (tantoshaErr) {
               console.error("顧客管理への登録は成功しましたが、担当者管理への登録に失敗しました:", tantoshaErr);
               alert("顧客管理への登録は完了しましたが、担当者情報の担当者管理への登録に失敗しました。必要であれば手動で担当者管理に追加してください。");
+            })
+            .then(function () {
+              return relinkSchedules(leadId, customerId);
             })
             .then(function () {
               return customerId;

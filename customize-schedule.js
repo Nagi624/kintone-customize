@@ -58,7 +58,7 @@
   }
 
   var EVENT_FIELDS = ['$id', '件名', '種類', '終日', '開始日時', '終了日時', '参加者', '場所', '会社名', '案件名', '公開区分', '元予定No',
-    '出欠', '実施状況', '繰り返しID'];
+    '出欠', '実施状況', '繰り返しID', 'ネタ会社名', '案件No', '顧客No', 'ネタNo'];
 
   // 範囲[start, end)に重なる予定。自分が元の非公開予定を見られる場合、その「予定あり」は除く
   function fetchEvents(start, end) {
@@ -84,6 +84,23 @@
           if (u) membersCache.push({ code: u.code, name: u.name, groups: fv(r, '表示グループ', []) });
         });
         return membersCache;
+      })
+      .catch(function () {
+        // 表示メンバー設定(35)を見られない人は、前後60日の予定の参加者からメンバーを作る(部署分け・並び順なし)
+        var now = new Date();
+        return fetchEvents(addDays(now, -60), addDays(now, 60)).then(function (recs) {
+          var seen = {};
+          membersCache = [];
+          recs.forEach(function (r) {
+            fv(r, '参加者', []).forEach(function (u) {
+              if (seen[u.code]) return;
+              seen[u.code] = true;
+              membersCache.push({ code: u.code, name: u.name, groups: [] });
+            });
+          });
+          membersCache.sort(function (a, b) { return a.name.localeCompare(b.name, 'ja'); });
+          return membersCache;
+        }).catch(function () { membersCache = []; return membersCache; });
       });
   }
 
@@ -101,6 +118,8 @@
   function isAllDay(r) { return fv(r, '終日', []).indexOf('終日') >= 0; }
   function typeOf(r) { return isCompanion(r) ? '予定あり' : fv(r, '種類', 'その他'); }
   function participantCodes(r) { return fv(r, '参加者', []).map(function (u) { return u.code; }); }
+  // 訪問先の会社名(顧客になっていない会社はネタリストの会社名)
+  function companyOf(r) { return fv(r, '会社名', '') || fv(r, 'ネタ会社名', ''); }
 
   // 出欠表からその人の回答を取り出す(行が無ければ null)
   function answerOf(r, code) {
@@ -214,6 +233,21 @@
       '.sched-actions button.on{background:#1e293b;color:#fff;border-color:#1e293b}',
       '.sched-actions button.primary{background:#2563eb;color:#fff;border-color:#2563eb}',
       '.sched-actions .lbl{font-size:13px;color:#475569}',
+      '.sched-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px}',
+      '.sched-modal{background:#fff;border-radius:8px;padding:16px;width:100%;max-width:880px;max-height:94vh;overflow:auto;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}',
+      '.sched-modal h3{margin:0 0 10px;font-size:16px}',
+      '.sched-modal label{display:block;margin:8px 0 4px;color:#475569;font-size:13px}',
+      '.sched-modal select{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;font-size:14px}',
+      '.sched-modal .btns{display:flex;flex-wrap:wrap;gap:8px;justify-content:flex-end;margin-top:14px}',
+      '.sched-modal .btns button{padding:8px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:14px}',
+      '.sched-modal .btns button.primary{background:#2563eb;color:#fff;border-color:#2563eb}',
+      '.sched-route-map{height:420px;border:1px solid #e2e8f0;border-radius:6px}',
+      '.sched-route-list{margin:10px 0 0;padding:0;list-style:none;font-size:13px}',
+      '.sched-route-list li{padding:4px 0;border-bottom:1px solid #f1f5f9}',
+      '.sched-route-list .who{font-weight:bold;margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}',
+      '.sched-route-list a{color:#2563eb}',
+      '.sched-pin{width:24px;height:24px;border-radius:50%;color:#fff;font-weight:bold;font-size:12px;display:flex;align-items:center;justify-content:center;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,.4)}',
+      '.sched-m .sched-route-map{height:300px}',
       // Outlook風レイアウト(左: ミニカレンダー+メンバー、右: 人ごとの予定表を横並び)
       '.sched-ol{display:flex;gap:12px;align-items:flex-start}',
       '.sched-side{width:230px;flex:0 0 230px;border-right:1px solid #e2e8f0;padding-right:10px}',
@@ -321,7 +355,7 @@
       var e = new Date(fv(r, '終了日時', ''));
       var title = isCompanion(r) ? '予定あり' : fv(r, '件名', '');
       if (!isCompanion(r) && fv(r, '公開区分', '') === '非公開') title = '🔒' + title;
-      if (!isCompanion(r) && fv(r, '会社名', '')) title += ' / ' + fv(r, '会社名', '');
+      if (!isCompanion(r) && companyOf(r)) title += ' / ' + companyOf(r);
       title = decorate(r, title);
       if (showNames) title = '[' + fv(r, '参加者', []).map(function (u) { return u.name; }).join('・') + '] ' + title;
       evs.push({
@@ -368,7 +402,8 @@
       b.addEventListener('click', function () { calState.view = v.key; saveState(); drawPanels(); });
       views.appendChild(b);
     });
-    [todayBtn, prevBtn, nextBtn, title, views, newBtn].forEach(function (x) { bar.appendChild(x); });
+    var routeBtn = el('button', { title: '表示中の日(週・月表示では今日)の訪問先を地図に表示' }, '🗺 訪問ルート');
+    [todayBtn, prevBtn, nextBtn, title, views, newBtn, routeBtn].forEach(function (x) { bar.appendChild(x); });
     var panels = el('div', { className: 'sched-panels' });
     main.appendChild(bar);
     main.appendChild(panels);
@@ -406,6 +441,8 @@
       GROUPS.forEach(function (g) {
         sections.push({ name: g, list: members.filter(function (m) { return m.groups.indexOf(g) >= 0; }) });
       });
+      // 部署が分からない人(表示メンバー設定を見られない場合など)
+      sections.push({ name: 'メンバー', list: members.filter(function (m) { return !m.groups.length && m.code !== me.code; }) });
       sections.forEach(function (sec) {
         if (!sec.list.length) return;
         var h = el('h4', { title: 'クリックでこのグループ全員の表示を切り替え' }, '▾ ' + sec.name);
@@ -586,6 +623,10 @@
     todayBtn.addEventListener('click', function () { calInstances.forEach(function (c) { c.today(); }); afterNavigate(); });
     prevBtn.addEventListener('click', function () { calInstances.forEach(function (c) { c.prev(); }); afterNavigate(); });
     nextBtn.addEventListener('click', function () { calInstances.forEach(function (c) { c.next(); }); afterNavigate(); });
+    routeBtn.addEventListener('click', function () {
+      var day = calState.view === 'day' ? calState.date : new Date();
+      showRoute(startOfDay(day), calState.checked.map(function (c) { return { code: c, name: nameOf(c), color: colorOf(c) }; }));
+    });
     newBtn.addEventListener('click', function () {
       var s = new Date(calState.date.getTime()); s.setHours(new Date().getHours() + 1, 0, 0, 0);
       openCreate({ start: toKintoneDT(s), end: toKintoneDT(new Date(s.getTime() + 3600000)), allDay: false, user: { code: me.code, name: me.name } });
@@ -642,6 +683,7 @@
         var merged = Object.assign({}, rec, body);
         return postComment(ev.id, '予定の日時が変更されました。\n件名: ' + fv(rec, '件名', '') + '\n日時: ' + whenText(merged), others);
       })
+      .then(function () { return syncDeals([fv(rec, '案件No', '')]).catch(function () { return null; }); })
       .then(function () { refetchAll(); })
       .catch(function (err) {
         info.revert();
@@ -723,7 +765,7 @@
               var s = new Date(fv(r, '開始日時', ''));
               var label = isAllDay(r) ? '終日' : (s >= dayStart ? hm(s) : '(続き)');
               var name = decorate(r, isCompanion(r) ? '予定あり' : (fv(r, '公開区分', '') === '非公開' ? '🔒' : '') + fv(r, '件名', ''));
-              var extra = !isCompanion(r) && fv(r, '会社名', '') ? ' / ' + fv(r, '会社名', '') : '';
+              var extra = !isCompanion(r) && companyOf(r) ? ' / ' + companyOf(r) : '';
               var chip = el('span', { className: ['sched-chip'].concat(stateClasses(r, m.code)).join(' '), style: '--c:' + TYPE_COLORS[typeOf(r)], title: label + ' ' + name + extra });
               chip.appendChild(el('span', { className: 't' }, label));
               chip.appendChild(document.createTextNode(name + extra));
@@ -842,6 +884,20 @@
       r.終了日時.value = p.end;
       r.終日.value = p.allDay ? ['終日'] : [];
       if (p.user && p.user.code) r.参加者.value = [{ code: p.user.code, name: p.user.name }];
+      if (p.title) r.件名.value = p.title;
+      if (p.type) r.種類.value = p.type;
+      if (p.custNo || p.dealNo || p.netaNo) {
+        // ルックアップの取得は表示が終わってから行う
+        setTimeout(function () {
+          var cur = recApi().get();
+          [['顧客No', p.custNo], ['案件No', p.dealNo], ['ネタNo', p.netaNo]].forEach(function (f) {
+            if (!f[1]) return;
+            cur.record[f[0]].value = String(f[1]);
+            cur.record[f[0]].lookup = true;
+          });
+          recApi().set(cur);
+        }, 0);
+      }
     } else if (!r.開始日時.value) {
       var s = new Date(); s.setMinutes(0, 0, 0); s.setHours(s.getHours() + 1);
       r.開始日時.value = toKintoneDT(s);
@@ -861,7 +917,7 @@
     var r = event.record;
     rememberDuration(r);
     prevState = {
-      codes: participantCodes(r), start: fv(r, '開始日時', ''), end: fv(r, '終了日時', ''), status: fv(r, '実施状況', '予定')
+      dealNo: fv(r, '案件No', ''), codes: participantCodes(r), start: fv(r, '開始日時', ''), end: fv(r, '終了日時', ''), status: fv(r, '実施状況', '予定')
     };
     setShown('元予定No', !!fv(r, '元予定No', ''));
     setShown('繰り返しID', false);
@@ -1007,6 +1063,12 @@
         return null;
       })
       .catch(function (err) { notes.push('繰り返し予定の作成・更新でエラーが出ました。' + (err && err.message ? err.message : '')); })
+      .then(function () {
+        var deals = [fv(r, '案件No', '')];
+        if (prevState && prevState.dealNo && deals.indexOf(prevState.dealNo) < 0) deals.push(prevState.dealNo);
+        return syncDeals(deals);
+      })
+      .catch(function () { notes.push('案件の次回商談日を更新できませんでした。'); })
       .then(function () { return notifyParticipants(id, r, isCreate); })
       .catch(function () { notes.push('参加者への通知(コメント)を送れませんでした。'); })
       .then(function () {
@@ -1057,7 +1119,7 @@
       件名: { value: fv(r, '件名', '') }, 種類: { value: fv(r, '種類', 'その他') }, 終日: { value: fv(r, '終日', []) },
       参加者: { value: fv(r, '参加者', []).map(function (u) { return { code: u.code }; }) },
       場所: { value: fv(r, '場所', '') }, 顧客No: { value: fv(r, '顧客No', '') }, 案件No: { value: fv(r, '案件No', '') },
-      内容: { value: fv(r, '内容', '') }, 公開区分: { value: fv(r, '公開区分', '公開') },
+      内容: { value: fv(r, '内容', '') }, 公開区分: { value: fv(r, '公開区分', '公開') }, ネタNo: { value: fv(r, 'ネタNo', '') }, 先方担当者No: { value: fv(r, '先方担当者No', '') },
       リマインダー: { value: fv(r, 'リマインダー', []) }
     };
   }
@@ -1080,6 +1142,8 @@
         });
         if (!rec.顧客No.value) delete rec.顧客No;
         if (!rec.案件No.value) delete rec.案件No;
+        if (!rec.ネタNo.value) delete rec.ネタNo;
+        if (!rec.先方担当者No.value) delete rec.先方担当者No;
         return rec;
       });
       var newIds = [];
@@ -1130,6 +1194,8 @@
         });
         if (!rec.顧客No.value) rec.顧客No = { value: '' };
         if (!rec.案件No.value) rec.案件No = { value: '' };
+        if (!rec.ネタNo.value) rec.ネタNo = { value: '' };
+        if (!rec.先方担当者No.value) rec.先方担当者No = { value: '' };
         return { id: fv(o, '$id', ''), record: rec };
       });
       return chunks(updates, 100).reduce(function (p, part) {
@@ -1139,6 +1205,36 @@
           return p.then(function () { return syncCompanion(u.id, Object.assign({}, u.record, { 参加者: { value: fv(r, '参加者', []) } })); });
         }, kintone.Promise.resolve());
       }).then(function () { return updates.length; });
+    });
+  }
+
+  // ---------- 案件管理(19)の次回商談日・初回商談日をスケジュールに合わせる ----------
+  // 次回商談日 = その案件の、これから先の「予定」(中止・完了・休暇を除く)で一番早い開始日時
+  // 初回商談日 = 空のときだけ、その案件の訪問(中止を除く)で一番早い日付を入れる
+  function syncDeals(dealNos, excludeId) {
+    var uniq = [];
+    dealNos.forEach(function (d) { if (d && uniq.indexOf(String(d)) < 0) uniq.push(String(d)); });
+    return uniq.reduce(function (p, no) { return p.then(function () { return syncDeal(no, excludeId); }); }, kintone.Promise.resolve());
+  }
+
+  function syncDeal(no, excludeId) {
+    var ex = excludeId ? ' and $id != ' + excludeId : '';
+    var base = '案件No = "' + no + '" and 元予定No = ""' + ex;
+    var nextQ = base + ' and 実施状況 in ("予定") and 種類 not in ("休暇") and 開始日時 >= NOW() order by 開始日時 asc limit 1';
+    var firstQ = base + ' and 種類 in ("訪問") and 実施状況 not in ("中止") order by 開始日時 asc limit 1';
+    return kintone.Promise.all([
+      api('/k/v1/records', 'GET', { app: APP_ID, query: nextQ, fields: ['開始日時'] }),
+      api('/k/v1/records', 'GET', { app: APP_ID, query: firstQ, fields: ['開始日時'] }),
+      api('/k/v1/record', 'GET', { app: DEAL_APP_ID, id: no })
+    ]).then(function (res) {
+      var deal = res[2].record;
+      var upd = {};
+      var next = res[0].records[0] ? fv(res[0].records[0], '開始日時', '') : '';
+      if (next && next !== fv(deal, '次回商談日', '')) upd.次回商談日 = { value: next };
+      var first = res[1].records[0] ? ymd(new Date(fv(res[1].records[0], '開始日時', ''))) : '';
+      if (first && !fv(deal, '初回商談日', '')) upd.初回商談日 = { value: first };
+      if (!Object.keys(upd).length) return null;
+      return api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: no, record: upd });
     });
   }
 
@@ -1220,6 +1316,17 @@
       });
       box.appendChild(ab);
     }
+    if (companyOf(r) || fv(r, '場所', '')) {
+      var mb = el('button', {}, '📍 地図で開く');
+      mb.addEventListener('click', function () {
+        visitPlaces([r]).then(function (places) {
+          var pl = places[fv(r, '$id', '')] || {};
+          var q = pl.lat ? pl.lat + ',' + pl.lng : (pl.address || fv(r, '場所', '') || companyOf(r));
+          window.open('https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q), '_blank');
+        });
+      });
+      box.appendChild(mb);
+    }
     if (box.children.length) space.appendChild(box);
   }
 
@@ -1259,7 +1366,65 @@
 
   // 訪問の予定から活動履歴(app17)を作り、予定を「完了」にして、活動履歴の編集画面を開く
   function createActivity(id, r) {
-    if (!confirm('この予定を「完了」にして、活動履歴を作成します。よろしいですか？\n(作成後、活動履歴の画面で報告内容を書いてください)')) return;
+    var dealNo = fv(r, '案件No', '');
+    var ask = dealNo ? askDealUpdate(dealNo) : kintone.Promise.resolve(
+      confirm('この予定を「完了」にして、活動履歴を作成します。よろしいですか？\n(作成後、活動履歴の画面で報告内容を書いてください)') ? {} : null);
+    ask.then(function (choice) {
+      if (!choice) return;
+      var upd = {};
+      if (choice.phase) upd.商談フェーズ = { value: choice.phase };
+      if (choice.kakudo) upd.確度 = { value: choice.kakudo };
+      var p = Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: dealNo, record: upd }) : kintone.Promise.resolve();
+      p.then(function () { doCreateActivity(id, r); }).catch(function (err) {
+        alert('案件の更新に失敗しました。' + (err && err.message ? '\n' + err.message : ''));
+      });
+    });
+  }
+
+  // 案件の商談フェーズ・確度を選ぶ画面。OKなら {phase, kakudo}、キャンセルなら null
+  function askDealUpdate(dealNo) {
+    return kintone.Promise.all([
+      api('/k/v1/record', 'GET', { app: DEAL_APP_ID, id: dealNo }),
+      api('/k/v1/app/form/fields', 'GET', { app: DEAL_APP_ID })
+    ]).then(function (res) {
+      var deal = res[0].record;
+      var props = res[1].properties;
+      function optionsOf(code) {
+        var o = props[code] && props[code].options ? props[code].options : {};
+        return Object.keys(o).sort(function (a, b) { return o[a].index - o[b].index; });
+      }
+      return new kintone.Promise(function (resolve) {
+        var bg = el('div', { className: 'sched-modal-bg' });
+        var m = el('div', { className: 'sched-modal', style: 'max-width:420px' });
+        m.appendChild(el('h3', {}, '訪問完了 → 活動履歴を作成'));
+        m.appendChild(el('div', {}, '案件「' + fv(deal, '案件名', '') + '」(' + fv(deal, '会社名', '') + ')の状況も更新できます。'));
+        function sel(code, label) {
+          m.appendChild(el('label', {}, label));
+          var s = el('select');
+          optionsOf(code).forEach(function (v) { var o = el('option', { value: v }, v); if (v === fv(deal, code, '')) o.selected = true; s.appendChild(o); });
+          m.appendChild(s);
+          return s;
+        }
+        var phase = sel('商談フェーズ', '商談フェーズ');
+        var kakudo = sel('確度', '確度');
+        var btns = el('div', { className: 'btns' });
+        var cancel = el('button', {}, 'キャンセル');
+        var ok = el('button', { className: 'primary' }, '完了にして活動履歴を作成');
+        btns.appendChild(cancel);
+        btns.appendChild(ok);
+        m.appendChild(btns);
+        bg.appendChild(m);
+        document.body.appendChild(bg);
+        function close(v) { document.body.removeChild(bg); resolve(v); }
+        cancel.addEventListener('click', function () { close(null); });
+        ok.addEventListener('click', function () {
+          close({ phase: phase.value !== fv(deal, '商談フェーズ', '') ? phase.value : '', kakudo: kakudo.value !== fv(deal, '確度', '') ? kakudo.value : '' });
+        });
+      });
+    });
+  }
+
+  function doCreateActivity(id, r) {
     var me = kintone.getLoginUser();
     var custNo = fv(r, '顧客No', '');
     var kindP;
@@ -1277,7 +1442,8 @@
         対応日付: { value: ymd(new Date(fv(r, '開始日時', ''))) },
         対応者: { value: [{ code: me.code }] },
         対応種別: { value: kind },
-        内容: { value: (body ? body + '\n\n' : '') + '(スケジュールNo.' + id + ' から作成)' }
+        内容: { value: (!fv(r, '会社名', '') && fv(r, 'ネタ会社名', '') ? '訪問先: ' + fv(r, 'ネタ会社名', '') + '(ネタNo.' + fv(r, 'ネタNo', '') + '、顧客未登録)\n' : '') +
+          (body ? body + '\n\n' : '') + '(スケジュールNo.' + id + ' から作成)' }
       };
       if (fv(r, '会社名', '')) rec.会社名 = { value: fv(r, '会社名', '') };
       if (fv(r, '案件名', '')) rec.案件名 = { value: fv(r, '案件名', '') };
@@ -1285,11 +1451,130 @@
     }).then(function (resp) {
       var actId = resp.id;
       return api('/k/v1/record', 'PUT', { app: APP_ID, id: id, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(actId) } } })
+        .then(function () { return syncDeals([fv(r, '案件No', '')]).catch(function () { return null; }); })
         .then(function () { return actId; });
     }).then(function (actId) {
       location.href = IS_MOBILE ? '/k/m/' + ACTIVITY_APP_ID + '/show?record=' + actId : '/k/' + ACTIVITY_APP_ID + '/show#record=' + actId + '&mode=edit';
     }).catch(function (err) {
       alert('活動履歴を作成できませんでした。' + (err && err.message ? '\n' + err.message : ''));
+    });
+  }
+
+  // ---------- 訪問先の場所と訪問ルート地図 ----------
+  var CUSTOMER_APP_ID = 18;
+  var LEAD_APP_ID = 29;
+
+  // 予定ごとの {lat, lng, address}。顧客は顧客管理、ネタはネタリストの緯度経度・住所を使う
+  function visitPlaces(recs) {
+    var custNos = [], netaNos = [];
+    recs.forEach(function (r) {
+      if (fv(r, '顧客No', '')) custNos.push(fv(r, '顧客No', ''));
+      else if (fv(r, 'ネタNo', '')) netaNos.push(fv(r, 'ネタNo', ''));
+    });
+    var cq = custNos.length ? fetchAll(CUSTOMER_APP_ID, '顧客No in (' + custNos.join(',') + ')', ['顧客No', '緯度', '経度', '都道府県', '住所', '建物名']) : kintone.Promise.resolve([]);
+    var nq = netaNos.length ? fetchAll(LEAD_APP_ID, 'レコード番号 in (' + netaNos.join(',') + ')', ['レコード番号', '緯度', '経度', '都道府県', '市区町村', '丁目番地等']) : kintone.Promise.resolve([]);
+    return kintone.Promise.all([cq, nq]).then(function (res) {
+      var cust = {}, neta = {};
+      res[0].forEach(function (c) { cust[fv(c, '顧客No', '')] = { lat: fv(c, '緯度', ''), lng: fv(c, '経度', ''), address: fv(c, '都道府県', '') + fv(c, '住所', '') + fv(c, '建物名', '') }; });
+      res[1].forEach(function (n) { neta[fv(n, 'レコード番号', '')] = { lat: fv(n, '緯度', ''), lng: fv(n, '経度', ''), address: fv(n, '都道府県', '') + fv(n, '市区町村', '') + fv(n, '丁目番地等', '') }; });
+      var out = {};
+      recs.forEach(function (r) {
+        var pl = fv(r, '顧客No', '') ? cust[fv(r, '顧客No', '')] : (fv(r, 'ネタNo', '') ? neta[fv(r, 'ネタNo', '')] : null);
+        out[fv(r, '$id', '')] = pl || { lat: '', lng: '', address: '' };
+      });
+      return out;
+    }).catch(function () { return {}; });
+  }
+
+  var leafletLoading = null;
+  function loadLeaflet() {
+    if (window.L) return kintone.Promise.resolve();
+    if (leafletLoading) return leafletLoading;
+    leafletLoading = new kintone.Promise(function (resolve, reject) {
+      var css = document.createElement('link');
+      css.rel = 'stylesheet';
+      css.href = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css';
+      document.head.appendChild(css);
+      var js = document.createElement('script');
+      js.src = 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js';
+      js.onload = function () { resolve(); };
+      js.onerror = function () { leafletLoading = null; reject(new Error('地図部品を読み込めませんでした')); };
+      document.head.appendChild(js);
+    });
+    return leafletLoading;
+  }
+
+  // その日の訪問・外出(中止を除く)を、人ごとに時間順の番号付きで地図に出す
+  function showRoute(day, people) {
+    var bg = el('div', { className: 'sched-modal-bg' });
+    var m = el('div', { className: 'sched-modal' + (IS_MOBILE ? ' sched-m' : '') });
+    var head = el('div', { style: 'display:flex;justify-content:space-between;align-items:center' });
+    head.appendChild(el('h3', {}, (day.getMonth() + 1) + '/' + day.getDate() + '(' + WEEKDAYS[day.getDay()] + ') の訪問ルート'));
+    var x = el('button', { style: 'border:none;background:none;font-size:20px;cursor:pointer' }, '×');
+    head.appendChild(x);
+    m.appendChild(head);
+    var mapEl = el('div', { className: 'sched-route-map' });
+    var list = el('div', { className: 'sched-route-list' }, '読み込み中…');
+    m.appendChild(mapEl);
+    m.appendChild(list);
+    bg.appendChild(m);
+    document.body.appendChild(bg);
+    x.addEventListener('click', function () { document.body.removeChild(bg); });
+    bg.addEventListener('click', function (e) { if (e.target === bg) document.body.removeChild(bg); });
+
+    var codes = people.map(function (p) { return p.code; });
+    kintone.Promise.all([loadLeaflet(), fetchEvents(day, addDays(day, 1))]).then(function (res) {
+      var recs = res[1].filter(function (r) {
+        return !isCompanion(r) && (fv(r, '種類', '') === '訪問' || fv(r, '種類', '') === '外出') && fv(r, '実施状況', '予定') !== '中止' &&
+          participantCodes(r).some(function (c) { return codes.indexOf(c) >= 0; });
+      });
+      return visitPlaces(recs).then(function (places) { return { recs: recs, places: places }; });
+    }).then(function (d) {
+      list.innerHTML = '';
+      var map = L.map(mapEl).setView([43.0621, 141.3544], 11);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+      var bounds = [];
+      if (!d.recs.length) list.textContent = 'この日の訪問・外出の予定はありません。';
+      people.forEach(function (p) {
+        var mine = d.recs.filter(function (r) { return participantCodes(r).indexOf(p.code) >= 0; })
+          .sort(function (a, b) { return new Date(fv(a, '開始日時', '')) - new Date(fv(b, '開始日時', '')); });
+        if (!mine.length) return;
+        var who = el('div', { className: 'who' });
+        who.appendChild(el('span', { style: 'color:' + p.color }, '● ' + p.name + '(' + mine.length + '件)'));
+        list.appendChild(who);
+        var line = [], stops = [];
+        var ul = el('ul', { style: 'margin:0;padding:0;list-style:none' });
+        mine.forEach(function (r, i) {
+          var pl = d.places[fv(r, '$id', '')] || {};
+          var s = new Date(fv(r, '開始日時', ''));
+          var li = el('li');
+          li.appendChild(el('b', {}, (i + 1) + '. '));
+          li.appendChild(document.createTextNode((isAllDay(r) ? '終日' : hm(s)) + ' ' + (companyOf(r) || fv(r, '件名', '')) + ' '));
+          if (pl.lat && pl.lng) {
+            var ll = [Number(pl.lat), Number(pl.lng)];
+            line.push(ll); bounds.push(ll); stops.push(pl.lat + ',' + pl.lng);
+            var icon = L.divIcon({ className: '', html: '<div class="sched-pin" style="background:' + p.color + '">' + (i + 1) + '</div>', iconSize: [24, 24], iconAnchor: [12, 12] });
+            L.marker(ll, { icon: icon }).addTo(map).bindPopup((i + 1) + '. ' + hm(s) + ' ' + (companyOf(r) || '').replace(/[<>&"]/g, ''));
+          } else {
+            li.appendChild(el('span', { style: 'color:#dc2626' }, '(位置情報なし)'));
+            if (pl.address) stops.push(pl.address);
+          }
+          ul.appendChild(li);
+        });
+        if (line.length > 1) L.polyline(line, { color: p.color, weight: 3, opacity: .7 }).addTo(map);
+        if (stops.length) {
+          // Googleマップの経路案内(出発地は現在地)
+          var url = 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(stops[stops.length - 1]) +
+            (stops.length > 1 ? '&waypoints=' + encodeURIComponent(stops.slice(0, -1).join('|')) : '') + '&travelmode=driving';
+          var a = el('a', { href: url, target: '_blank' }, 'Googleマップで経路を開く');
+          who.appendChild(a);
+        }
+        list.appendChild(ul);
+      });
+      if (bounds.length) map.fitBounds(bounds, { padding: [30, 30], maxZoom: 15 });
+      setTimeout(function () { map.invalidateSize(); }, 50);
+    }).catch(function (err) {
+      list.textContent = '地図を表示できませんでした。' + (err && err.message ? err.message : '');
     });
   }
 
@@ -1299,7 +1584,9 @@
     var r = event.record;
     if (isCompanion(r)) return event;
     var id = fv(r, '$id', '') || event.recordId;
-    var p = deleteCompanion(id);
+    var p = deleteCompanion(id).then(function () {
+      return syncDeals([fv(r, '案件No', '')], id).catch(function () { return null; });
+    });
     if (fv(r, '繰り返しID', '') && event.type.indexOf('index') < 0 &&
       confirm('この予定は繰り返し予定です。\n\nOK: この後の繰り返しもまとめて削除する\nキャンセル: この回だけ削除する')) {
       p = p.then(function () { return futureOccurrences(r, ['$id']); }).then(function (occs) {
