@@ -8,6 +8,9 @@
  * - 案件管理で次回商談日を入れて保存すると、スケジュールに予定を自動で作る(前の次回商談日の予定があればその日時を動かす)。
  *   参加者=商談担当者(空なら主担当)。案件側のリマインダー通知は廃止し、スケジュールのリマインダーに一本化した。
  * - 案件の詳細画面で、次回商談日とスケジュールの「この案件の次の予定」が食い違っていたら赤い警告と直すボタンを出す。
+ * - 案件管理: 「📄 見積書を作成」で、案件No.を取得した状態の見積書の作成画面を開く(受け取りは customize-quote-number.js)。
+ * - ネタリスト: 「📞 架電を記録」で、結果・メモ・次回架電予定日だけの小さな画面から架電履歴に1行足して保存する
+ *   (日付=今日・担当=自分。獲得ならアポ獲得者が空のとき自分を入れ、続けてアポをスケジュールに登録するか聞く)。
  */
 (function () {
   'use strict';
@@ -15,6 +18,7 @@
   var SCHEDULE_APP_ID = 34;
   var DEAL_APP_ID = 19;
   var LEAD_APP_ID = 29;
+  var QUOTE_APP_ID = 16;
   var PREFILL_KEY = 'sched-prefill-34';
   var BUTTON_ID = 'schedule-link-button';
 
@@ -188,6 +192,102 @@
     }).catch(function () { /* スケジュールを見られない人には出さない */ });
   }
 
+  // ---------- ネタリスト: 架電を記録(編集画面を開かずに1回で保存) ----------
+  var CALL_RESULTS = ['架電済み', '不通・不在', 'ネタ', '獲得', '失注'];
+
+  function todayYmd() {
+    var d = new Date();
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+
+  // REST APIで返ってきたテーブルの行を、更新(PUT)に使える形にする
+  function rowForPut(row) {
+    var v = {};
+    Object.keys(row.value).forEach(function (c) {
+      var x = row.value[c].value;
+      v[c] = { value: x && x.length && x[0] && x[0].code ? x.map(function (u) { return { code: u.code }; }) : x };
+    });
+    return { id: row.id, value: v };
+  }
+
+  function openCallDialog(r) {
+    var bg = document.createElement('div');
+    bg.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px';
+    var m = document.createElement('div');
+    m.style.cssText = 'background:#fff;border-radius:8px;padding:16px;width:100%;max-width:420px;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)';
+    m.innerHTML = '<div style="font-size:16px;font-weight:bold;margin-bottom:10px">📞 架電を記録</div>' +
+      '<div style="color:#475569;margin-bottom:6px">結果</div><div class="call-results" style="display:flex;flex-wrap:wrap;gap:6px"></div>' +
+      '<div style="color:#475569;margin:12px 0 6px">メモ</div><input class="call-memo" type="text" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box">' +
+      '<div style="color:#475569;margin:12px 0 6px">次回架電予定日(また連絡するとき)</div><input class="call-next" type="date" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px">' +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button type="button" class="call-cancel" style="padding:8px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer">キャンセル</button>' +
+      '<button type="button" class="call-save" style="padding:8px 14px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer">保存</button></div>';
+    bg.appendChild(m);
+    document.body.appendChild(bg);
+    var chosen = '';
+    var box = m.querySelector('.call-results');
+    CALL_RESULTS.forEach(function (res) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = res;
+      b.style.cssText = 'padding:8px 12px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer';
+      b.addEventListener('click', function () {
+        chosen = res;
+        [].forEach.call(box.children, function (x) { x.style.background = '#fff'; x.style.color = ''; });
+        b.style.background = '#1e293b';
+        b.style.color = '#fff';
+      });
+      box.appendChild(b);
+    });
+    var nextVal = fv(r, '次回架電予定日', '');
+    if (nextVal) m.querySelector('.call-next').value = nextVal;
+    function close() { if (bg.parentNode) document.body.removeChild(bg); }
+    m.querySelector('.call-cancel').addEventListener('click', close);
+    m.querySelector('.call-save').addEventListener('click', function () {
+      if (!chosen) { alert('結果を選んでください'); return; }
+      var memo = m.querySelector('.call-memo').value;
+      var next = m.querySelector('.call-next').value;
+      var id = fv(r, 'レコード番号', '') || fv(r, '$id', '');
+      var me = kintone.getLoginUser();
+      this.disabled = true;
+      api('/k/v1/record', 'GET', { app: LEAD_APP_ID, id: id }).then(function (resp) {
+        var cur = resp.record;
+        // 何も入っていない行(新規作成時の初期値だけの行など)は除いて、新しい行を足す
+        var rows = fv(cur, '架電履歴', []).filter(function (row) {
+          return fv(row.value, '履歴結果', '') || fv(row.value, '履歴メモ', '');
+        }).map(rowForPut);
+        rows.push({ value: {
+          履歴日付: { value: todayYmd() }, 履歴担当: { value: [{ code: me.code }] },
+          履歴結果: { value: chosen }, 履歴メモ: { value: memo }
+        } });
+        var upd = { 架電履歴: { value: rows }, 次回架電予定日: { value: next || null } };
+        if (chosen === '獲得' && !fv(cur, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
+        return api('/k/v1/record', 'PUT', { app: LEAD_APP_ID, id: id, record: upd });
+      }).then(function () {
+        close();
+        if (chosen === '獲得' && confirm('アポ獲得として記録しました。続けて、アポをスケジュールに登録しますか？')) {
+          openScheduleCreate(leadPrefill(r));
+          return;
+        }
+        location.reload();
+      }).catch(function (err) {
+        alert('記録できませんでした。' + (err && err.message ? '\n' + err.message : ''));
+        close();
+      });
+    });
+  }
+
+  // ---------- 詳細画面のボタン ----------
+  function makeButton(text, primary, onClick) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = text;
+    btn.style.cssText = 'margin-right:8px;padding:6px 14px;border-radius:4px;border:1px solid #2563eb;cursor:pointer;font-size:13px;' +
+      (primary ? 'background:#2563eb;color:#fff;' : 'background:#fff;color:#2563eb;') +
+      (IS_MOBILE ? 'display:block;width:calc(100% - 24px);margin:6px 12px;padding:10px 14px;' : '');
+    btn.addEventListener('click', onClick);
+    return btn;
+  }
+
   kintone.events.on(['app.record.detail.show', 'mobile.app.record.detail.show'], function (event) {
     IS_MOBILE = event.type.indexOf('mobile.') === 0;
     var appId = Number(event.appId);
@@ -199,16 +299,19 @@
     var space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.record.getHeaderMenuSpaceElement();
     if (!space) return event;
     var r = event.record;
-    var btn = document.createElement('button');
-    btn.id = BUTTON_ID;
-    btn.type = 'button';
-    btn.textContent = appId === DEAL_APP_ID ? '📅 訪問を予定に登録' : '📅 アポを予定に登録';
-    btn.style.cssText = 'margin-right:8px;padding:6px 14px;border-radius:4px;border:1px solid #2563eb;background:#fff;color:#2563eb;cursor:pointer;font-size:13px;' +
-      (IS_MOBILE ? 'display:block;width:calc(100% - 24px);margin:6px 12px;padding:10px 14px;' : '');
-    btn.addEventListener('click', function () {
-      openScheduleCreate(appId === DEAL_APP_ID ? dealPrefill(r) : leadPrefill(r));
-    });
-    space.appendChild(btn);
+    var wrap = document.createElement('span');
+    wrap.id = BUTTON_ID;
+    if (appId === DEAL_APP_ID) {
+      wrap.appendChild(makeButton('📅 訪問を予定に登録', false, function () { openScheduleCreate(dealPrefill(r)); }));
+      wrap.appendChild(makeButton('📄 見積書を作成', false, function () {
+        try { sessionStorage.setItem('quote-prefill-16', JSON.stringify({ dealNo: fv(r, '案件No_', '') })); } catch (e) { /* 案件は手で取得する */ }
+        location.href = IS_MOBILE ? '/k/m/' + QUOTE_APP_ID + '/edit' : '/k/' + QUOTE_APP_ID + '/edit';
+      }));
+    } else {
+      wrap.appendChild(makeButton('📞 架電を記録', true, function () { openCallDialog(r); }));
+      wrap.appendChild(makeButton('📅 アポを予定に登録', false, function () { openScheduleCreate(leadPrefill(r)); }));
+    }
+    space.appendChild(wrap);
     return event;
   });
 })();

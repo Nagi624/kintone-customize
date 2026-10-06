@@ -5,6 +5,7 @@
  * - 既存の値がある場合(コピー作成時など)は上書きしない
  * - 保存直前にも再度空チェックを行い、万一未採番のまま保存されそうな場合は採番し直す
  *   (画面を開いたまま長時間放置した場合の月またぎ対策・保険)
+ * - 案件管理の「見積書を作成」ボタンから開いたときは、案件No.を入れて自動で取得する
  */
 (function () {
   "use strict";
@@ -58,6 +59,25 @@
       event.record[FIELD_CODE].value = newNumber;
       return event;
     });
+  });
+
+  // 案件管理の「見積書を作成」ボタンから開いたとき、案件No.を入れて取得する(customize-schedule-links.js が渡す)
+  kintone.events.on(["app.record.create.show", "mobile.app.record.create.show"], function (event) {
+    var raw = null;
+    try { raw = sessionStorage.getItem("quote-prefill-16"); sessionStorage.removeItem("quote-prefill-16"); } catch (e) { raw = null; }
+    if (!raw) return event;
+    var dealNo = JSON.parse(raw).dealNo;
+    if (!dealNo) return event;
+    var isMobile = event.type.indexOf("mobile.") === 0;
+    // ルックアップの取得は表示が終わってから行う
+    setTimeout(function () {
+      var api = isMobile ? kintone.mobile.app.record : kintone.app.record;
+      var cur = api.get();
+      cur.record["案件No"].value = String(dealNo);
+      cur.record["案件No"].lookup = true;
+      api.set(cur);
+    }, 0);
+    return event;
   });
 
   kintone.events.on(["app.record.create.submit", "mobile.app.record.create.submit"], function (event) {
