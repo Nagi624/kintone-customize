@@ -17,6 +17,8 @@
  *    明細は 訪問→訪問 / 中止・外出→その他。予定から活動履歴を作成済みなら、その活動履歴の行で取り込むので予定の行は作らない
  *    翌営業日(土日を除く)の予定を「明日の目標」に下書きとして追記する(【翌営業日の予定】の見出しがあれば追記しない)
  *
+ * スマホの一覧: 全列150px固定で日付と報告者だけで画面が埋まるため、列幅を中身に合わせて詰める
+ *
  * 二重取り込み防止: 内容の先頭に [履歴No.X] [案件No.X] [ネタNo.X-行ID] [ネタ新規] [予定No.X] の印を付け、既にある印はスキップする
  */
 (function () {
@@ -317,6 +319,63 @@
       btn.addEventListener('click', importAll);
       space.appendChild(btn);
     }
+    return event;
+  });
+
+  // ---------- スマホの一覧: 列幅を中身に合わせて詰める ----------
+  // スマホ(ブラウザ)の一覧は全列が150px固定で、日付と報告者だけで画面が埋まるため。
+  // 利用者が列の境目をドラッグして変えた幅は尊重し、150pxのままの列だけを変える。
+  var MOBILE_COL_WIDTH = {
+    '日付': 88, '報告者': 104,
+    '訪問件数（午前）': 58, '訪問件数（午後）': 58, '訪問件数（合計）': 58, 'アポ件数': 58, '見込み件数': 58, '受注件数': 58,
+    '受注金額（合計）': 92, '今日の課題': 180, '明日の目標': 180
+  };
+  var MOBILE_COL_DEFAULT = 64; // 上に無い列(後から一覧に足した列など)
+  var MOBILE_COL_KINTONE_DEFAULT = '150px';
+
+  function fitMobileListColumns() {
+    var table = document.querySelector('.gaia-mobile-v2-app-index-recordlist-table');
+    if (!table) return;
+    var cols = table.querySelectorAll('col');
+    var ths = table.querySelectorAll('th.gaia-mobile-v2-app-index-recordlist-table-headercell');
+    var shrink = 0; // 狭くした分だけ表全体の幅も縮める(縮めないと残りの列が広がる)
+    for (var i = 0; i < ths.length; i++) {
+      var th = ths[i];
+      var label = th.querySelector('.gaia-mobile-v2-app-index-recordlist-table-headercell-label');
+      if (!label || th.style.width !== MOBILE_COL_KINTONE_DEFAULT) continue;
+      var w = MOBILE_COL_WIDTH[label.textContent.trim()] || MOBILE_COL_DEFAULT;
+      th.style.width = w + 'px';
+      var wrap = th.querySelector('.gaia-mobile-v2-app-index-recordlist-table-headercell-wrapper');
+      if (wrap) wrap.style.width = w + 'px';
+      if (cols[i]) cols[i].style.width = w + 'px';
+      shrink += parseFloat(MOBILE_COL_KINTONE_DEFAULT) - w;
+    }
+    if (!shrink) return;
+    var tw = parseFloat(table.style.width);
+    if (tw) table.style.width = (tw - shrink) + 'px';
+  }
+
+  function addMobileListStyle() {
+    if (document.getElementById('daily-report-mobile-list-style')) return;
+    var st = document.createElement('style');
+    st.id = 'daily-report-mobile-list-style';
+    // 狭くした列の見出し(「訪問件数（午前）」など)は2行に折り返して全部見せる
+    st.textContent = '.gaia-mobile-v2-app-index-recordlist-table-headercell-label{white-space:normal;line-height:1.25;word-break:break-all;}';
+    document.head.appendChild(st);
+  }
+
+  var mobileListObserver = null;
+  function watchMobileList() {
+    addMobileListStyle();
+    fitMobileListColumns();
+    if (mobileListObserver) mobileListObserver.disconnect();
+    // ページ送り・並べ替えで表が描き直されても幅を当て直す
+    mobileListObserver = new MutationObserver(function () { fitMobileListColumns(); });
+    mobileListObserver.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['style'] });
+  }
+
+  kintone.events.on('mobile.app.record.index.show', function (event) {
+    watchMobileList();
     return event;
   });
 })();
