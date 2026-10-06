@@ -1400,7 +1400,7 @@
         var bg = el('div', { className: 'sched-modal-bg' });
         var m = el('div', { className: 'sched-modal', style: 'max-width:420px' });
         m.appendChild(el('h3', {}, '訪問完了 → 活動履歴を作成'));
-        m.appendChild(el('div', {}, '案件「' + fv(deal, '案件名', '') + '」(' + fv(deal, '会社名', '') + ')の状況も更新できます。'));
+        m.appendChild(el('div', {}, '案件「' + (fv(deal, '案件名', '') || fv(deal, '会社名', '')) + '」(案件No.' + dealNo + ')の状況も更新できます。'));
         function sel(code, label) {
           m.appendChild(el('label', {}, label));
           var s = el('select');
@@ -1452,7 +1452,7 @@
           (body ? body + '\n\n' : '') + '(スケジュールNo.' + id + ' から作成)' }
       };
       if (fv(r, '会社名', '')) rec.会社名 = { value: fv(r, '会社名', '') };
-      if (fv(r, '案件名', '')) rec.案件名 = { value: fv(r, '案件名', '') };
+      if (fv(r, '案件No', '')) rec.案件No = { value: fv(r, '案件No', '') };
       return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: rec });
     }).then(function (resp) {
       var actId = resp.id;

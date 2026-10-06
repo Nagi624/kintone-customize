@@ -369,7 +369,7 @@
 
       var popupHtml =
         '<div style="font-size:13px;line-height:1.6">' +
-        "<strong>" + escapeHtml(fv(deal, "案件名", "") || "(案件名未入力)") + "</strong><br>" +
+        "<strong>" + escapeHtml(fv(deal, "案件名", "") || companyName || "(会社名未入力)") + "</strong><br>" +
         "会社名: " + escapeHtml(companyName || "-") + "<br>" +
         "商談フェーズ: " + escapeHtml(deal.__phase || "-") + "<br>" +
         "次回商談日: " + escapeHtml(fv(deal, "次回商談日", "") ? new Date(fv(deal, "次回商談日", "")).toLocaleString("ja-JP") : "未設定") +

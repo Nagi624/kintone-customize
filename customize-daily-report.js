@@ -73,6 +73,7 @@
         '明細_会社名': { type: 'SINGLE_LINE_TEXT', value: opt.company || '' },
         '明細_案件No': { type: 'NUMBER', value: opt.dealNo || '', lookup: !!opt.dealNo },
         '明細_案件名': { type: 'SINGLE_LINE_TEXT', value: '' },
+        '明細_確度': { type: 'SINGLE_LINE_TEXT', value: '' },
         '金額': { type: 'NUMBER', value: opt.amount || '' },
         '内容': { type: 'SINGLE_LINE_TEXT', value: opt.memo },
         '受注フラグ': { type: 'CALC', value: '' },

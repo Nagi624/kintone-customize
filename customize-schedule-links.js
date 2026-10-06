@@ -46,7 +46,7 @@
     var next = fv(r, '次回商談日', '');
     var start = next && new Date(next) > new Date() ? new Date(next) : nextHour();
     var owner = fv(r, '主担当', [])[0] || kintone.getLoginUser();
-    var name = fv(r, '会社名', '') + (fv(r, '案件名', '') ? ' / ' + fv(r, '案件名', '') : '');
+    var name = fv(r, '会社名', '') + (fv(r, '提案商品', '') ? ' / ' + fv(r, '提案商品', '') : '');
     return {
       start: toKintoneDT(start), end: toKintoneDT(new Date(start.getTime() + 3600000)), allDay: false,
       user: { code: owner.code, name: owner.name },
@@ -115,7 +115,7 @@
         var users = fv(r, '商談担当者', []);
         if (!users.length) users = fv(r, '主担当', []);
         if (!users.length) users = [kintone.getLoginUser()];
-        var name = fv(r, '会社名', '') + (fv(r, '案件名', '') ? ' / ' + fv(r, '案件名', '') : '');
+        var name = fv(r, '会社名', '') + (fv(r, '提案商品', '') ? ' / ' + fv(r, '提案商品', '') : '');
         var rec = {
           件名: { value: '商談: ' + name }, 種類: { value: '訪問' },
           開始日時: { value: next }, 終了日時: { value: toKintoneDT(new Date(new Date(next).getTime() + 3600000)) },
