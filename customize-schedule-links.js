@@ -97,9 +97,11 @@
   function pushToSchedule(dealNo, r, prev) {
     var next = fv(r, '次回商談日', '');
     if (!next) return kintone.Promise.resolve('');
-    return findAt(dealNo, next).then(function (already) {
+    // 新しい日時の予定があるか・前の日時の予定があるかは、同時に問い合わせる(保存後の待ち時間を短くするため)
+    return kintone.Promise.all([findAt(dealNo, next), prev ? findAt(dealNo, prev) : kintone.Promise.resolve(null)]).then(function (res) {
+      var already = res[0];
       if (already) return '';
-      return (prev ? findAt(dealNo, prev) : kintone.Promise.resolve(null)).then(function (old) {
+      return kintone.Promise.resolve(res[1]).then(function (old) {
         if (old) {
           if (fv(old, '公開区分', '') === '非公開') {
             throw new Error('前の次回商談日の予定が非公開のため、自動では動かしませんでした。スケジュールで直してください。');

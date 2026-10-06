@@ -1439,9 +1439,12 @@
       }).then(function (resp) { return resp.records.length ? '商談（2回目以降）' : '商談（初回）'; });
     }
     kindP.then(function (kind) {
-      var body = fv(r, '内容', '');
+      // 予定の内容のうち、自動で入れた裏方の文言は報告に写さない
+      var body = fv(r, '内容', '').replace(/\(案件管理の次回商談日から自動作成\)/g, '').trim();
+      // 件名は「種類: 会社名」の短い形にする(予定の件名は「商談: 会社名 / 案件名」のように長いことがあるため)
+      var title = companyOf(r) ? fv(r, '種類', '訪問') + ': ' + companyOf(r) : fv(r, '件名', '');
       var rec = {
-        タイトル: { value: fv(r, '件名', '') },
+        タイトル: { value: title },
         対応日付: { value: ymd(new Date(fv(r, '開始日時', ''))) },
         対応者: { value: [{ code: me.code }] },
         対応種別: { value: kind },
@@ -1548,6 +1551,7 @@
         who.appendChild(el('span', { style: 'color:' + p.color }, '● ' + p.name + '(' + mine.length + '件)'));
         list.appendChild(who);
         var line = [], stops = [];
+        var used = {};  // 同じ場所に複数回行くとピンが重なるので、2つ目以降を少しずらす
         var ul = el('ul', { style: 'margin:0;padding:0;list-style:none' });
         mine.forEach(function (r, i) {
           var pl = d.places[fv(r, '$id', '')] || {};
@@ -1558,8 +1562,11 @@
           if (pl.lat && pl.lng) {
             var ll = [Number(pl.lat), Number(pl.lng)];
             line.push(ll); bounds.push(ll); stops.push(pl.lat + ',' + pl.lng);
+            var key = pl.lat + ',' + pl.lng;
+            var n = used[key] = (used[key] || 0) + 1;
+            var pin = n === 1 ? ll : [ll[0] - 0.00025 * (n - 1), ll[1] + 0.00035 * (n - 1)];
             var icon = L.divIcon({ className: '', html: '<div class="sched-pin" style="background:' + p.color + '">' + (i + 1) + '</div>', iconSize: [24, 24], iconAnchor: [12, 12] });
-            L.marker(ll, { icon: icon }).addTo(map).bindPopup((i + 1) + '. ' + hm(s) + ' ' + (companyOf(r) || '').replace(/[<>&"]/g, ''));
+            L.marker(pin, { icon: icon }).addTo(map).bindPopup((i + 1) + '. ' + hm(s) + ' ' + (companyOf(r) || '').replace(/[<>&"]/g, ''));
           } else {
             li.appendChild(el('span', { style: 'color:#dc2626' }, '(位置情報なし)'));
             if (pl.address) stops.push(pl.address);

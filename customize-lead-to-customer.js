@@ -9,7 +9,7 @@
  * - ネタリストの「架電履歴」サブテーブルは、顧客管理への登録と同時に活動履歴(app17)へ
  *   1行=1レコードとして実登録する(対応種別は「電話」固定、会社名はルックアップで顧客管理と自動紐付け)。
  *   これにより顧客管理側の「活動履歴一覧」に転換前の接触履歴がそのまま表示される
- * - スケジュール(app34)でこのネタに紐づいていた予定は、新しい顧客に付け替える
+ * - スケジュール(app34)でこのネタに紐づいていた予定は、新しい顧客に付け替える。日時が過ぎて「予定」のままの訪問は、完了にするか聞く
  * - 顧客管理への登録に成功したら、ネタリスト側の元レコードは削除する
  *   (コピーではなく「移動」として扱う)
  * - 誤操作防止のため、作成前に確認ダイアログを一度挟む(削除される旨も明記)
@@ -178,7 +178,7 @@
     return kintone.api(kintone.api.url("/k/v1/records", true), "GET", {
       app: SCHEDULE_APP_ID,
       query: 'ネタNo = "' + leadId + '" limit 500',
-      fields: ["$id"],
+      fields: ["$id", "開始日時", "実施状況", "種類"],
     }).then(function (resp) {
       if (!resp.records.length) return null;
       return kintone.api(kintone.api.url("/k/v1/records", true), "PUT", {
@@ -186,6 +186,17 @@
         records: resp.records.map(function (r) {
           return { id: r.$id.value, record: { "顧客No": { value: String(customerId) }, "ネタNo": { value: "" }, "ネタ会社名": { value: "" } } };
         }),
+      }).then(function () {
+        // すでに日時が過ぎたのに「予定」のままの訪問(初回のアポなど)は、完了にするか聞く
+        var past = resp.records.filter(function (r) {
+          return r["実施状況"].value === "予定" && r["種類"].value === "訪問" && new Date(r["開始日時"].value) < new Date();
+        });
+        if (!past.length || !window.confirm("この会社への訪問の予定のうち、日時が過ぎて「予定」のままのものが" + past.length +
+          "件あります。\n「完了」にしますか？\n(報告を書く場合は、あとで予定の画面の「訪問完了 → 活動履歴を作成」から作れます)")) return null;
+        return kintone.api(kintone.api.url("/k/v1/records", true), "PUT", {
+          app: SCHEDULE_APP_ID,
+          records: past.map(function (r) { return { id: r.$id.value, record: { "実施状況": { value: "完了" } } }; }),
+        });
       });
     }).catch(function (err) {
       console.warn("スケジュールの予定をネタから顧客へ付け替えられませんでした:", err);
