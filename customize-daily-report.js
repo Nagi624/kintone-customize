@@ -23,6 +23,9 @@
  * スマホの一覧: 全列150px固定で日付と報告者だけで画面が埋まるため、列幅を中身に合わせて詰める
  *
  * 二重取り込み防止: 内容の先頭に [履歴No.X] [案件No.X] [ネタNo.X-行ID] [ネタ新規] [予定No.X] の印を付け、既にある印はスキップする
+ * 1社1行: 同じ会社(表記ゆれ・空白を無視)か同じ案件No.の行が既にあれば、新しい行は作らずその行にまとめる。
+ *   内容は「既存 / 取り込み分」とつなぎ、区分は成果の大きい方(受注>アポ獲得>見込み>訪問>架電>その他)、
+ *   時間帯・会社名・案件No.・受注金額は既存の行が空のときだけ入れる
  */
 (function () {
   'use strict';
@@ -89,6 +92,35 @@
     return !fv(row.value, '明細_会社名', '') && !fv(row.value, '内容', '') && !fv(row.value, '明細_案件No', '');
   }
 
+  // ---- 1社1行にまとめる ----
+  var KUBUN_RANK = ['その他', '架電', '訪問', '見込み', 'アポ獲得', '受注'];
+  function kubunRank(k) { return KUBUN_RANK.indexOf(k); }
+
+  function companyKey(s) {
+    return (s || '').normalize('NFKC').replace(/[\s\/]+/g, '').toLowerCase();
+  }
+
+  function rowKeys(company, dealNo) {
+    var keys = [];
+    if (companyKey(company)) keys.push('c:' + companyKey(company));
+    if (dealNo) keys.push('d:' + dealNo);
+    return keys;
+  }
+
+  function mergeInto(row, opt) {
+    var v = row.value;
+    var memo = fv(v, '内容', '');
+    v['内容'].value = memo ? memo + ' / ' + opt.memo : opt.memo;
+    if (kubunRank(opt.kubun) > kubunRank(fv(v, '区分', ''))) v['区分'].value = opt.kubun;
+    if (v['区分'].value === '受注' && !fv(v, '金額', '') && opt.amount) v['金額'].value = opt.amount;
+    if (!fv(v, '時間帯', '') && opt.time) v['時間帯'].value = opt.time;
+    if (!fv(v, '明細_会社名', '') && opt.company) v['明細_会社名'].value = opt.company;
+    if (!fv(v, '明細_案件No', '') && opt.dealNo) {
+      v['明細_案件No'].value = opt.dealNo;
+      v['明細_案件No'].lookup = true;
+    }
+  }
+
   // ---- 1. 活動履歴 ----
   function fromActivities(codes, date) {
     var q = '対応者 in (' + codes + ') and 対応日付 = "' + date + '" order by レコード番号 asc';
@@ -140,7 +172,7 @@
             return { mark: '[案件No.' + no + (base.kubun === '受注' ? ' 受注]' : ']'), alt: '[案件No.' + no + ' 受注]', row: base };
           });
         }
-        base.kubun = isNew ? '見込み' : 'その他';
+        base.kubun = isNew && phase !== '失注' ? '見込み' : 'その他';
         base.memo = '[案件No.' + no + '] ' + detail;
         return { mark: '[案件No.' + no + ']', alt: '[案件No.' + no + ' 受注]', row: base };
       }));
@@ -266,10 +298,27 @@
       var rows = fv(latest.record, TABLE, []).filter(function (r) { return !isBlankRow(r); });
       var existing = rows.map(function (r) { return fv(r.value, '内容', ''); }).join('\n');
       var counts = [0, 0, 0, 0];
+      var merged = 0;
+      var byKey = {};
+      function register(row) {
+        rowKeys(fv(row.value, '明細_会社名', ''), fv(row.value, '明細_案件No', '')).forEach(function (k) {
+          if (!byKey[k]) byKey[k] = row;
+        });
+      }
+      rows.forEach(register);
       res.forEach(function (items, i) {
         items.forEach(function (it) {
           if (existing.indexOf(it.mark) !== -1 || (it.alt && existing.indexOf(it.alt) !== -1)) return;
-          rows.push(makeRow(it.row));
+          var target = null;
+          rowKeys(it.row.company, it.row.dealNo).some(function (k) { target = byKey[k]; return !!target; });
+          if (target) {
+            mergeInto(target, it.row);
+            merged++;
+          } else {
+            target = makeRow(it.row);
+            rows.push(target);
+          }
+          register(target);
           existing += '\n' + it.mark;
           counts[i]++;
         });
@@ -296,6 +345,7 @@
       recApi().set(latest);
       window.alert('取り込みました:\n活動履歴 ' + counts[0] + '件 / 案件管理 ' + counts[1] + '件 / ネタリスト ' + counts[2] +
         '件 / スケジュール ' + counts[3] + '件' +
+        (merged ? '\n(うち ' + merged + '件は、同じ会社の行にまとめました)' : '') +
         (visitChanged ? '\n訪問件数を予定から入れました(午前' + sched.am + '・午後' + sched.pm + ')' : '') +
         (planAdded ? '\n翌営業日の予定を「明日の目標」に追記しました' : '') +
         (sched.ok ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした') +
