@@ -17,6 +17,9 @@
  *    明細は 訪問→訪問 / 中止・外出→その他。予定から活動履歴を作成済みなら、その活動履歴の行で取り込むので予定の行は作らない
  *    翌営業日(土日を除く)の予定を「明日の目標」に下書きとして追記する(【翌営業日の予定】の見出しがあれば追記しない)
  *
+ * 明細で案件No.を選んだとき、会社名が空なら案件管理の会社名を入れる
+ * (ルックアップのコピー先にすると会社名を手入力できなくなり、案件の無いネタの行で困るため)
+ *
  * スマホの一覧: 全列150px固定で日付と報告者だけで画面が埋まるため、列幅を中身に合わせて詰める
  *
  * 二重取り込み防止: 内容の先頭に [履歴No.X] [案件No.X] [ネタNo.X-行ID] [ネタ新規] [予定No.X] の印を付け、既にある印はスキップする
@@ -320,6 +323,38 @@
       btn.addEventListener('click', importAll);
       space.appendChild(btn);
     }
+    return event;
+  });
+
+  // ---------- 明細の案件No. → 会社名 ----------
+  // change イベントは Promise を待たないので、取得後に set し直す。
+  // どの行が変わったかは追わず、案件No.があって会社名が空の行をまとめて埋める
+  function fillCompanyFromDeals() {
+    var rows = fv(recApi().get().record, TABLE, []);
+    var nos = [];
+    rows.forEach(function (r) {
+      var no = fv(r.value, '明細_案件No', '');
+      if (no && !fv(r.value, '明細_会社名', '') && nos.indexOf(no) === -1) nos.push(no);
+    });
+    if (!nos.length) return;
+    getAll(APP.deal, '案件No_ in (' + nos.join(',') + ')').then(function (recs) {
+      var names = {};
+      recs.forEach(function (d) { names[fv(d, '案件No_', '')] = fv(d, '会社名', ''); });
+      var latest = recApi().get();
+      var changed = false;
+      fv(latest.record, TABLE, []).forEach(function (r) {
+        var name = names[fv(r.value, '明細_案件No', '')];
+        if (name && !fv(r.value, '明細_会社名', '')) { r.value['明細_会社名'].value = name; changed = true; }
+      });
+      if (changed) recApi().set(latest);
+    }).catch(function (e) { console.warn('案件の会社名を取得できませんでした', e); });
+  }
+
+  kintone.events.on(['app.record.create.change.明細_案件No', 'app.record.edit.change.明細_案件No',
+    'mobile.app.record.create.change.明細_案件No', 'mobile.app.record.edit.change.明細_案件No'], function (event) {
+    detectEnv(event);
+    // 取得直後は値がまだ反映途中のことがあるため、イベントを返してから読む
+    setTimeout(fillCompanyFromDeals, 0);
     return event;
   });
 
