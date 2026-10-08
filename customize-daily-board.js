@@ -12,7 +12,7 @@
  * 件数の数え方: 訪問=訪問件数（合計）、架電=明細の区分「架電」の行数、アポ・見込み=欄の値と明細の行数の大きい方、受注=受注件数
  * 明細は会社名も内容も空の行(区分の初期値だけの行)を数えない
  *
- * 試験公開中は PREVIEW_USERS の人だけに表示し、他の人には「準備中」と出す(全員に出すときは PREVIEW_USERS を null にする)
+ * PREVIEW_USERS に人を並べると、その人だけに表示し他の人には「準備中」と出す(null で全員に表示)
  */
 (function () {
   'use strict';
@@ -21,7 +21,7 @@
   var APP_GOAL = 37;
   var VIEW_PC = '日報ボード';
   var VIEW_MOBILE = '日報ボード(スマホ)';
-  var PREVIEW_USERS = ['taimei.sol@gmail.com', 'takeitomoharu.taimeis@outlook.jp'];
+  var PREVIEW_USERS = null; // 2026-10-09 全員公開。試験公開に戻すときは ['taimei.sol@gmail.com', 'takeitomoharu.taimeis@outlook.jp']
   var MEMBER_DAYS = 30;
   var NEWS_DAYS = 14;
   var NEWS_LIMIT = 12;
