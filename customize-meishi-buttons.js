@@ -313,6 +313,25 @@
     return true;
   }
 
+  // 写真・PDFを添付しただけのレコード(読み取り待ち)と、名刺ごとのレコードに分けた後の元レコード(分割済み)は
+  // 会社名などが入っていないため、登録ボタンの代わりに案内を出す(2026-10-09、process_meishi_kintone.pyの自動読み取りに合わせて追加)
+  var NOTICE_BY_STATUS = {
+    "読み取り待ち": "この名刺はまだ読み取られていません。数分で自動で読み取られ、名刺1枚ごとのレコードに分かれます。",
+    "読み取り中": "この名刺を読み取っています。数分後に一覧の「確認待ち」に名刺1枚ごとのレコードが届きます(この画面は閉じて構いません)。",
+    "分割済み": "このレコードの名刺は、1枚ごとの別レコードに分けて登録しました(その他情報のレコード番号を参照)。それぞれのレコードから登録してください。",
+  };
+
+  function showNotice(text) {
+    var space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.record.getHeaderMenuSpaceElement();
+    if (!space) return;
+    var note = document.createElement("div");
+    note.className = "meishi-action-btn";
+    note.textContent = text;
+    note.style.cssText = "display:inline-block;padding:6px 10px;margin:" + (IS_MOBILE ? "8px 12px" : "0") +
+      ";border-left:4px solid #e0a800;background:#fff8e1;font-size:13px;line-height:1.6;";
+    space.appendChild(note);
+  }
+
   function trySetup(fn, record) {
     try {
       return !!fn(record);
@@ -327,6 +346,11 @@
     // スマホは画面遷移しても前のボタンが残ることがあるため、毎回作り直して今のレコードに紐付ける
     var olds = document.querySelectorAll(".meishi-action-btn");
     for (var i = 0; i < olds.length; i++) olds[i].parentNode.removeChild(olds[i]);
+    var notice = NOTICE_BY_STATUS[fv(event.record, "読み取りステータス", "")];
+    if (notice) {
+      try { showNotice(notice); } catch (e) { console.warn("案内の表示に失敗しました:", e); }
+      return event;
+    }
     trySetup(IS_MOBILE ? setupMobile : setupDesktop, event.record);
     return event;
   }
