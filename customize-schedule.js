@@ -252,6 +252,7 @@
       '.sched-ep-tels{display:flex;flex-direction:column;gap:2px}',
       '.sched-ep-tels a{color:#1d4ed8;text-decoration:none;font-weight:bold}',
       '.sched-ep-tels .note{color:#64748b;font-size:12px}',
+      '.sched-ep-none{color:#94a3b8}',
       '.sched-ep-nomap{color:#94a3b8;font-size:13px;padding:10px;background:#f8fafc;border-radius:8px}',
       '.sched-gmap iframe{display:block;width:100%;border:0;border-radius:10px;background:#e2e8f0}',
       '.sched-gmap-btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}',
@@ -1528,9 +1529,14 @@
     add(pl.tel, '');
     add(fv(r, '先方電話', ''), '担当者');
     add(fv(r, '先方携帯', ''), '担当者携帯');
-    if (!list.length) return null;
     var d = el('div', { className: 'sched-ep-row' });
     d.appendChild(el('span', { className: 'i' }, '📞'));
+    // 会社・訪問先がある予定で番号が無いときは、不具合と見分けられるよう「未登録」と出す
+    if (!list.length) {
+      if (!companyOf(r)) return null;
+      d.appendChild(el('span', { className: 'sched-ep-none' }, '電話番号未登録'));
+      return d;
+    }
     var box = el('span', { className: 'sched-ep-tels' });
     list.forEach(function (t) {
       var line = el('span', {});
