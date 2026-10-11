@@ -9,7 +9,8 @@
  *   参加者=商談担当者(空なら主担当)。案件側のリマインダー通知は廃止し、スケジュールのリマインダーに一本化した。
  * - 案件の詳細画面で、次回商談日とスケジュールの「この案件の次の予定」が食い違っていたら赤い警告と直すボタンを出す。
  * - 案件管理: 「📄 見積書を作成」で、案件No.を取得した状態の見積書の作成画面を開く(受け取りは customize-quote-number.js)。
- * - ネタリスト: 「📞 架電を記録」で、結果・メモ・次回架電予定日だけの小さな画面から架電履歴に1行足して保存する
+ * - ネタリスト: 「📞 架電を記録」「🚶 飛び込みを記録」で、結果・メモ・次回架電予定日だけの小さな画面から架電履歴に1行足して保存する
+ *   (2026-10-11: 電話/飛び込みの区別と時刻も残す。毎朝の架電・飛び込みリストの点数とおすすめ時間帯の学習に使う)
  *   (日付=今日・担当=自分。獲得ならアポ獲得者が空のとき自分を入れ、続けてアポをスケジュールに登録するか聞く)。
  */
 (function () {
@@ -212,12 +213,19 @@
     return { id: row.id, value: v };
   }
 
-  function openCallDialog(r) {
+  function nowHm() {
+    var d = new Date();
+    return pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  // kind: '電話' または '飛び込み'
+  function openCallDialog(r, kind) {
+    kind = kind || '電話';
     var bg = document.createElement('div');
     bg.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px';
     var m = document.createElement('div');
     m.style.cssText = 'background:#fff;border-radius:8px;padding:16px;width:100%;max-width:420px;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)';
-    m.innerHTML = '<div style="font-size:16px;font-weight:bold;margin-bottom:10px">📞 架電を記録</div>' +
+    m.innerHTML = '<div style="font-size:16px;font-weight:bold;margin-bottom:10px">' + (kind === '飛び込み' ? '🚶 飛び込みを記録' : '📞 架電を記録') + '</div>' +
       '<div style="color:#475569;margin-bottom:6px">結果</div><div class="call-results" style="display:flex;flex-wrap:wrap;gap:6px"></div>' +
       '<div style="color:#475569;margin:12px 0 6px">メモ</div><input class="call-memo" type="text" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box">' +
       '<div style="color:#475569;margin:12px 0 6px">次回架電予定日(また連絡するとき)</div><input class="call-next" type="date" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px">' +
@@ -258,8 +266,8 @@
           return fv(row.value, '履歴結果', '') || fv(row.value, '履歴メモ', '');
         }).map(rowForPut);
         rows.push({ value: {
-          履歴日付: { value: todayYmd() }, 履歴担当: { value: [{ code: me.code }] },
-          履歴結果: { value: chosen }, 履歴メモ: { value: memo }
+          履歴日付: { value: todayYmd() }, 履歴時刻: { value: nowHm() }, 履歴種別: { value: kind },
+          履歴担当: { value: [{ code: me.code }] }, 履歴結果: { value: chosen }, 履歴メモ: { value: memo }
         } });
         var upd = { 架電履歴: { value: rows }, 次回架電予定日: { value: next || null } };
         if (chosen === '獲得' && !fv(cur, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
@@ -310,7 +318,8 @@
         location.href = IS_MOBILE ? '/k/m/' + QUOTE_APP_ID + '/edit' : '/k/' + QUOTE_APP_ID + '/edit';
       }));
     } else {
-      wrap.appendChild(makeButton('📞 架電を記録', true, function () { openCallDialog(r); }));
+      wrap.appendChild(makeButton('📞 架電を記録', true, function () { openCallDialog(r, '電話'); }));
+      wrap.appendChild(makeButton('🚶 飛び込みを記録', true, function () { openCallDialog(r, '飛び込み'); }));
       wrap.appendChild(makeButton('📅 アポを予定に登録', false, function () { openScheduleCreate(leadPrefill(r)); }));
     }
     space.appendChild(wrap);
