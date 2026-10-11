@@ -233,6 +233,28 @@
       '.sched-actions button.on{background:#1e293b;color:#fff;border-color:#1e293b}',
       '.sched-actions button.primary{background:#2563eb;color:#fff;border-color:#2563eb}',
       '.sched-actions .lbl{font-size:13px;color:#475569}',
+      '.sched-ep-bg{position:fixed;inset:0;z-index:10000;background:transparent}',
+      '.sched-ep{position:absolute;top:0;right:0;bottom:0;width:400px;max-width:100%;background:#fff;box-shadow:-6px 0 24px rgba(15,23,42,.18);display:flex;flex-direction:column;font-size:14px;animation:schedEpIn .18s ease-out}',
+      '.sched-ep.sched-ep-m{top:auto;left:0;width:auto;max-height:88vh;border-radius:14px 14px 0 0;box-shadow:0 -6px 24px rgba(15,23,42,.25);animation:schedEpUp .2s ease-out}',
+      '@keyframes schedEpIn{from{transform:translateX(30px);opacity:0}to{transform:none;opacity:1}}',
+      '@keyframes schedEpUp{from{transform:translateY(40px);opacity:0}to{transform:none;opacity:1}}',
+      '.sched-ep-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid #e2e8f0}',
+      '.sched-ep-head button{padding:6px 14px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:14px}',
+      '.sched-ep-head button.primary{background:#2563eb;color:#fff;border-color:#2563eb}',
+      '.sched-ep-head button.x{border:none;font-size:22px;line-height:1;padding:4px 8px;color:#475569}',
+      '.sched-ep-body{padding:14px 16px 20px;overflow:auto}',
+      '.sched-ep-type{display:inline-block;color:#fff;font-size:12px;padding:2px 10px;border-radius:999px}',
+      '.sched-ep-title{font-size:18px;font-weight:bold;margin:8px 0 4px;line-height:1.4;word-break:break-all}',
+      '.sched-ep-when{color:#334155;margin-bottom:10px}',
+      '.sched-ep-row{display:flex;gap:8px;margin:5px 0;color:#334155;word-break:break-all}',
+      '.sched-ep-row .i{width:20px;flex:none;text-align:center}',
+      '.sched-ep-map{margin-top:12px}',
+      '.sched-ep-nomap{color:#94a3b8;font-size:13px;padding:10px;background:#f8fafc;border-radius:8px}',
+      '.sched-gmap iframe{display:block;width:100%;border:0;border-radius:10px;background:#e2e8f0}',
+      '.sched-gmap-btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}',
+      '.sched-gmap-btns a{padding:7px 16px;border-radius:999px;border:1px solid #cbd5e1;color:#1e293b;text-decoration:none;font-size:13px;background:#fff}',
+      '.sched-gmap-btns a.primary{background:#0f766e;border-color:#0f766e;color:#fff;font-weight:bold}',
+      '.sched-gmap-label{font-size:13px;color:#475569;margin:0 0 6px}',
       '.sched-modal-bg{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px}',
       '.sched-modal{background:#fff;border-radius:8px;padding:16px;width:100%;max-width:880px;max-height:94vh;overflow:auto;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}',
       '.sched-modal h3{margin:0 0 10px;font-size:16px}',
@@ -572,7 +594,11 @@
             success(evs);
           }).catch(function (err) { failure(err); });
         },
-        eventClick: function (info) { if (info.event.id) openRecord(info.event.id); },
+        eventClick: function (info) {
+          if (!info.event.id) return;
+          var rec = info.event.extendedProps.rec;
+          if (rec && !isCompanion(rec)) showEventPanel(rec); else openRecord(info.event.id);
+        },
         select: function (info) {
           var end = info.allDay ? addDays(info.end, -1) : info.end;
           var u = codes.length === 1 ? { code: codes[0], name: nameOf(codes[0]) } : { code: me.code, name: me.name };
@@ -769,7 +795,10 @@
               var chip = el('span', { className: ['sched-chip'].concat(stateClasses(r, m.code)).join(' '), style: '--c:' + TYPE_COLORS[typeOf(r)], title: label + ' ' + name + extra });
               chip.appendChild(el('span', { className: 't' }, label));
               chip.appendChild(document.createTextNode(name + extra));
-              chip.addEventListener('click', function (ev) { ev.stopPropagation(); openRecord(fv(r, '$id', '')); });
+              chip.addEventListener('click', function (ev) {
+                ev.stopPropagation();
+                if (isCompanion(r)) openRecord(fv(r, '$id', '')); else showEventPanel(r);
+              });
               td.appendChild(chip);
             });
             td.addEventListener('click', function () {
@@ -935,6 +964,7 @@
     setShown('活動履歴No', !!fv(r, '活動履歴No', ''));
     if (fv(r, '繰り返し', 'なし') === 'なし') { setShown('繰り返し', false); setShown('繰り返し終了日', false); }
     drawDetailActions(event);
+    drawDetailMap(event);
     return event;
   });
 
@@ -1464,6 +1494,114 @@
     }).catch(function (err) {
       alert('活動履歴を作成できませんでした。' + (err && err.message ? '\n' + err.message : ''));
     });
+  }
+
+  // ---------- Googleマップ埋め込み(Maps Embed API。無料・回数無制限、キーはkintoneのドメインからのみ使える) ----------
+  var MAPS_EMBED_KEY = 'AIzaSyBCYfViGdyx65ARV2jCOnkUK1UFxYqmfPU';
+
+  // 地図で探す文字列。場所欄 > 会社名+住所(顧客/ネタ) > 緯度経度 > 会社名。どれも無ければ ''
+  function mapQuery(r) {
+    if (fv(r, '場所', '')) return kintone.Promise.resolve(fv(r, '場所', ''));
+    if (!companyOf(r)) return kintone.Promise.resolve('');
+    return visitPlaces([r]).then(function (places) {
+      var pl = places[fv(r, '$id', '')] || {};
+      if (pl.address) return companyOf(r) + ' ' + pl.address;
+      if (pl.lat && pl.lng) return pl.lat + ',' + pl.lng;
+      return companyOf(r);
+    });
+  }
+
+  // 地図(iframe)と「Googleマップで開く」「ルート」ボタン
+  function mapBlock(q, height) {
+    var box = el('div', { className: 'sched-gmap' });
+    box.appendChild(el('iframe', {
+      src: 'https://www.google.com/maps/embed/v1/place?key=' + MAPS_EMBED_KEY + '&language=ja&region=JP&q=' + encodeURIComponent(q),
+      style: 'height:' + height + 'px', loading: 'lazy', referrerpolicy: 'strict-origin-when-cross-origin', allowfullscreen: '', title: '地図'
+    }));
+    var btns = el('div', { className: 'sched-gmap-btns' });
+    var route = el('a', { href: 'https://www.google.com/maps/dir/?api=1&destination=' + encodeURIComponent(q), target: '_blank', rel: 'noopener', className: 'primary' }, '◆ ルート');
+    var open = el('a', { href: 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(q), target: '_blank', rel: 'noopener' }, 'Googleマップで開く');
+    btns.appendChild(route);
+    btns.appendChild(open);
+    box.appendChild(btns);
+    return box;
+  }
+
+  // 詳細画面: スペース「sched_map」に地図を出す(場所が分からない予定・「予定あり」は欄ごと隠す)
+  function drawDetailMap(event) {
+    var r = event.record;
+    var api = recApi();
+    var space = api.getSpaceElement ? api.getSpaceElement('sched_map') : null;
+    if (!space) return;
+    space.innerHTML = '';
+    var wrap = space.parentNode;
+    if (isCompanion(r)) { if (wrap) wrap.style.display = 'none'; return; }
+    mapQuery(r).then(function (q) {
+      if (!q) { if (wrap) wrap.style.display = 'none'; return; }
+      space.appendChild(el('div', { className: 'sched-gmap-label' }, '📍 地図'));
+      space.appendChild(mapBlock(q, IS_MOBILE ? 240 : 320));
+    });
+  }
+
+  // カレンダーで予定をクリックしたとき、右側(スマホは下から)に詳細+地図のパネルを出す
+  function showEventPanel(r) {
+    closeEventPanel();
+    var id = fv(r, '$id', '');
+    var bg = el('div', { id: 'sched-ep-bg', className: 'sched-ep-bg' });
+    var p = el('div', { className: 'sched-ep' + (IS_MOBILE ? ' sched-ep-m' : '') });
+    var head = el('div', { className: 'sched-ep-head' });
+    var openBtn = el('button', { className: 'primary' }, '詳細を開く');
+    openBtn.addEventListener('click', function () { openRecord(id); });
+    var x = el('button', { title: '閉じる', className: 'x' }, '×');
+    x.addEventListener('click', closeEventPanel);
+    head.appendChild(openBtn);
+    head.appendChild(x);
+    p.appendChild(head);
+
+    var body = el('div', { className: 'sched-ep-body' });
+    var type = typeOf(r);
+    body.appendChild(el('span', { className: 'sched-ep-type', style: 'background:' + (TYPE_COLORS[type] || '#64748b') }, type));
+    body.appendChild(el('div', { className: 'sched-ep-title' }, (fv(r, '公開区分', '') === '非公開' ? '🔒' : '') + fv(r, '件名', '(件名なし)')));
+    var s = new Date(fv(r, '開始日時', '')), e = new Date(fv(r, '終了日時', ''));
+    var when = (s.getMonth() + 1) + '月' + s.getDate() + '日(' + WEEKDAYS[s.getDay()] + ')';
+    if (isAllDay(r)) {
+      if (ymd(s) !== ymd(e)) when += ' 〜 ' + (e.getMonth() + 1) + '月' + e.getDate() + '日(' + WEEKDAYS[e.getDay()] + ')';
+      when += ' 終日';
+    } else {
+      when += ' ' + hm(s) + ' 〜 ' + (ymd(s) === ymd(e) ? '' : (e.getMonth() + 1) + '/' + e.getDate() + ' ') + hm(e);
+    }
+    body.appendChild(el('div', { className: 'sched-ep-when' }, when));
+    function row(icon, text) {
+      if (!text) return;
+      var d = el('div', { className: 'sched-ep-row' });
+      d.appendChild(el('span', { className: 'i' }, icon));
+      d.appendChild(el('span', {}, text));
+      body.appendChild(d);
+    }
+    row('👥', fv(r, '参加者', []).map(function (u) { return u.name; }).join('、'));
+    row('🏢', companyOf(r));
+    row('💼', fv(r, '案件名', ''));
+    row('📍', fv(r, '場所', ''));
+    if (fv(r, '実施状況', '') && fv(r, '実施状況', '') !== '予定') row('✔', fv(r, '実施状況', ''));
+    var mapBox = el('div', { className: 'sched-ep-map' });
+    body.appendChild(mapBox);
+    p.appendChild(body);
+    bg.appendChild(p);
+    document.body.appendChild(bg);
+    bg.addEventListener('click', function (ev) { if (ev.target === bg) closeEventPanel(); });
+    document.addEventListener('keydown', panelEsc);
+
+    mapQuery(r).then(function (q) {
+      if (!document.body.contains(mapBox)) return;
+      if (q) mapBox.appendChild(mapBlock(q, IS_MOBILE ? 220 : 300));
+      else mapBox.appendChild(el('div', { className: 'sched-ep-nomap' }, '場所・訪問先が未入力のため地図は表示できません'));
+    });
+  }
+  function panelEsc(ev) { if (ev.key === 'Escape') closeEventPanel(); }
+  function closeEventPanel() {
+    var old = document.getElementById('sched-ep-bg');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    document.removeEventListener('keydown', panelEsc);
   }
 
   // ---------- 訪問先の場所と訪問ルート地図 ----------
