@@ -23,7 +23,7 @@
     { code: 'nm7karusyu@gmail.com', name: '渡邉 純樹' },
     { code: 'kanoyama1123@gmail.com', name: '山岸 花音' }
   ];
-  var PREVIEW_USERS = ['taimei.sol@gmail.com', TAKEI]; // 試験公開中。全員公開時は null
+  var PREVIEW_USERS = null; // 2026-10-11 全員公開。試験公開に戻すときは ['taimei.sol@gmail.com', TAKEI]
 
   // 段位の条件(仮。数字はここで調整する)
   var REQ = { calls: 50, apo: 2, knock: 50, sit: 3, deals: 3, won: 1 };
