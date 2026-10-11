@@ -147,7 +147,7 @@
   }
 
   // 会社の集計期間は21日〜翌月20日の「月度」(2026-10-11決定、全アプリ共通)。10月度=9/21〜10/20
-  // key はチーム目標(app37)の対象月(その月の1日)の年月
+  // key は月度の年月(10月度='2026-10')
   function fiscalMonth(date) {
     var y = +date.slice(0, 4), m = +date.slice(5, 7), day = +date.slice(8, 10);
     if (day >= 21) { m += 1; if (m === 13) { m = 1; y += 1; } }
@@ -183,12 +183,11 @@
       .then(function (recs) { state.reports = recs; });
   }
   function loadGoal(date) {
-    var month = fiscalMonth(date).key;
+    var fm = fiscalMonth(date), month = fm.key;
     if (state.goalMonth === month) return Promise.resolve();
-    var first = month + '-01';
-    var last = ymd(new Date(+month.slice(0, 4), +month.slice(5, 7), 0));
+    // チーム目標(app37)の対象月度は月度の初日(21日)で入力する。旧形式(当月1日)も同じ月度の期間内なので拾える
     return kintone.api(kintone.api.url('/k/v1/records', true), 'GET', {
-      app: APP_GOAL, query: '対象月 >= "' + first + '" and 対象月 <= "' + last + '" limit 1'
+      app: APP_GOAL, query: '対象月 >= "' + fm.start + '" and 対象月 <= "' + fm.end + '" limit 1'
     }).then(function (resp) {
       state.goal = resp.records[0] || null;
       state.goalMonth = month;

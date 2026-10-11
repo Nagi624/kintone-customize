@@ -175,10 +175,6 @@
     while (d <= to) { if (!isWeekend(d)) n++; d = addDay(d, 1); }
     return n;
   }
-  function monthLast(key) {
-    var d = new Date(Date.UTC(+key.slice(0, 4), +key.slice(5, 7), 0));
-    return d.toISOString().slice(0, 10);
-  }
 
   function proratedGoals(start, end) {
     var parts = [];
@@ -191,7 +187,8 @@
       d = addDay(fm.end, 1);
     }
     return Promise.all(parts.map(function (p) {
-      return getRecords(37, makeDateQuery('対象月', p.fm.key, monthLast(p.fm.key)),
+      // チーム目標の対象月度は月度の初日(21日)で入力する。旧形式(当月1日)も同じ月度の期間内なので拾える
+      return getRecords(37, makeDateQuery('対象月', p.fm.start, p.fm.end),
         GOAL_FIELDS.map(function (g) { return g[0]; }))
         .then(function (recs) { return recs[0] || null; }, function () { return null; });
     })).then(function (goals) {
