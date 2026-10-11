@@ -13,7 +13,7 @@
   var MANUAL_RECORD = 14;
   var PC_VIEW = '道場';
   var MOBILE_VIEW = '道場(スマホ)';
-  var PREVIEW_USERS = ['taimei.sol@gmail.com', 'takeitomoharu.taimeis@outlook.jp']; // 試験公開中。全員公開時は null
+  var PREVIEW_USERS = null; // 2026-10-11 全員公開。試験公開に戻すときは ['taimei.sol@gmail.com', 'takeitomoharu.taimeis@outlook.jp']
 
   var IS_MOBILE = false;
   var ROOT = null;
