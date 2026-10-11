@@ -58,7 +58,7 @@
   }
 
   var EVENT_FIELDS = ['$id', '件名', '種類', '終日', '開始日時', '終了日時', '参加者', '場所', '会社名', '案件名', '公開区分', '元予定No',
-    '出欠', '実施状況', '繰り返しID', 'ネタ会社名', '案件No', '顧客No', 'ネタNo'];
+    '出欠', '実施状況', '繰り返しID', 'ネタ会社名', '案件No', '顧客No', 'ネタNo', '先方電話', '先方携帯'];
 
   // 範囲[start, end)に重なる予定。自分が元の非公開予定を見られる場合、その「予定あり」は除く
   function fetchEvents(start, end) {
@@ -249,6 +249,9 @@
       '.sched-ep-row{display:flex;gap:8px;margin:5px 0;color:#334155;word-break:break-all}',
       '.sched-ep-row .i{width:20px;flex:none;text-align:center}',
       '.sched-ep-map{margin-top:12px}',
+      '.sched-ep-tels{display:flex;flex-direction:column;gap:2px}',
+      '.sched-ep-tels a{color:#1d4ed8;text-decoration:none;font-weight:bold}',
+      '.sched-ep-tels .note{color:#64748b;font-size:12px}',
       '.sched-ep-nomap{color:#94a3b8;font-size:13px;padding:10px;background:#f8fafc;border-radius:8px}',
       '.sched-gmap iframe{display:block;width:100%;border:0;border-radius:10px;background:#e2e8f0}',
       '.sched-gmap-btns{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}',
@@ -1503,12 +1506,40 @@
   function mapQuery(r) {
     if (fv(r, '場所', '')) return kintone.Promise.resolve(fv(r, '場所', ''));
     if (!companyOf(r)) return kintone.Promise.resolve('');
-    return visitPlaces([r]).then(function (places) {
-      var pl = places[fv(r, '$id', '')] || {};
-      if (pl.address) return companyOf(r) + ' ' + pl.address;
-      if (pl.lat && pl.lng) return pl.lat + ',' + pl.lng;
-      return companyOf(r);
+    return visitPlaces([r]).then(function (places) { return queryFrom(r, places[fv(r, '$id', '')] || {}); });
+  }
+  function queryFrom(r, pl) {
+    if (fv(r, '場所', '')) return fv(r, '場所', '');
+    if (!companyOf(r)) return '';
+    if (pl.address) return companyOf(r) + ' ' + pl.address;
+    if (pl.lat && pl.lng) return pl.lat + ',' + pl.lng;
+    return companyOf(r);
+  }
+
+  // 電話番号の行(店・会社の代表番号 → 先方担当者の電話・携帯。同じ番号は1回だけ)。押すと電話をかけられる
+  function phoneRow(r, pl) {
+    var list = [], seen = {};
+    function add(num, note) {
+      var key = String(num || '').replace(/[^0-9+]/g, '');
+      if (!key || seen[key]) return;
+      seen[key] = true;
+      list.push({ num: num, key: key, note: note });
+    }
+    add(pl.tel, '');
+    add(fv(r, '先方電話', ''), '担当者');
+    add(fv(r, '先方携帯', ''), '担当者携帯');
+    if (!list.length) return null;
+    var d = el('div', { className: 'sched-ep-row' });
+    d.appendChild(el('span', { className: 'i' }, '📞'));
+    var box = el('span', { className: 'sched-ep-tels' });
+    list.forEach(function (t) {
+      var line = el('span', {});
+      line.appendChild(el('a', { href: 'tel:' + t.key }, t.num));
+      if (t.note) line.appendChild(el('span', { className: 'note' }, ' (' + t.note + ')'));
+      box.appendChild(line);
     });
+    d.appendChild(box);
+    return d;
   }
 
   // 地図(iframe)と「Googleマップで開く」「ルート」ボタン
@@ -1580,6 +1611,8 @@
     }
     row('👥', fv(r, '参加者', []).map(function (u) { return u.name; }).join('、'));
     row('🏢', companyOf(r));
+    var telSlot = el('div');
+    body.appendChild(telSlot);
     row('💼', fv(r, '案件名', ''));
     row('📍', fv(r, '場所', ''));
     if (fv(r, '実施状況', '') && fv(r, '実施状況', '') !== '予定') row('✔', fv(r, '実施状況', ''));
@@ -1591,8 +1624,12 @@
     bg.addEventListener('click', function (ev) { if (ev.target === bg) closeEventPanel(); });
     document.addEventListener('keydown', panelEsc);
 
-    mapQuery(r).then(function (q) {
+    visitPlaces([r]).then(function (places) {
       if (!document.body.contains(mapBox)) return;
+      var pl = places[fv(r, '$id', '')] || {};
+      var tel = phoneRow(r, pl);
+      if (tel) telSlot.appendChild(tel);
+      var q = queryFrom(r, pl);
       if (q) mapBox.appendChild(mapBlock(q, IS_MOBILE ? 220 : 300));
       else mapBox.appendChild(el('div', { className: 'sched-ep-nomap' }, '場所・訪問先が未入力のため地図は表示できません'));
     });
@@ -1615,12 +1652,12 @@
       if (fv(r, '顧客No', '')) custNos.push(fv(r, '顧客No', ''));
       else if (fv(r, 'ネタNo', '')) netaNos.push(fv(r, 'ネタNo', ''));
     });
-    var cq = custNos.length ? fetchAll(CUSTOMER_APP_ID, '顧客No in (' + custNos.join(',') + ')', ['顧客No', '緯度', '経度', '都道府県', '住所', '建物名']) : kintone.Promise.resolve([]);
-    var nq = netaNos.length ? fetchAll(LEAD_APP_ID, 'レコード番号 in (' + netaNos.join(',') + ')', ['レコード番号', '緯度', '経度', '都道府県', '市区町村', '丁目番地等']) : kintone.Promise.resolve([]);
+    var cq = custNos.length ? fetchAll(CUSTOMER_APP_ID, '顧客No in (' + custNos.join(',') + ')', ['顧客No', '緯度', '経度', '都道府県', '住所', '建物名', '電話番号']) : kintone.Promise.resolve([]);
+    var nq = netaNos.length ? fetchAll(LEAD_APP_ID, 'レコード番号 in (' + netaNos.join(',') + ')', ['レコード番号', '緯度', '経度', '都道府県', '市区町村', '丁目番地等', '電話番号']) : kintone.Promise.resolve([]);
     return kintone.Promise.all([cq, nq]).then(function (res) {
       var cust = {}, neta = {};
-      res[0].forEach(function (c) { cust[fv(c, '顧客No', '')] = { lat: fv(c, '緯度', ''), lng: fv(c, '経度', ''), address: fv(c, '都道府県', '') + fv(c, '住所', '') + fv(c, '建物名', '') }; });
-      res[1].forEach(function (n) { neta[fv(n, 'レコード番号', '')] = { lat: fv(n, '緯度', ''), lng: fv(n, '経度', ''), address: fv(n, '都道府県', '') + fv(n, '市区町村', '') + fv(n, '丁目番地等', '') }; });
+      res[0].forEach(function (c) { cust[fv(c, '顧客No', '')] = { lat: fv(c, '緯度', ''), lng: fv(c, '経度', ''), address: fv(c, '都道府県', '') + fv(c, '住所', '') + fv(c, '建物名', ''), tel: fv(c, '電話番号', '') }; });
+      res[1].forEach(function (n) { neta[fv(n, 'レコード番号', '')] = { lat: fv(n, '緯度', ''), lng: fv(n, '経度', ''), address: fv(n, '都道府県', '') + fv(n, '市区町村', '') + fv(n, '丁目番地等', ''), tel: fv(n, '電話番号', '') }; });
       var out = {};
       recs.forEach(function (r) {
         var pl = fv(r, '顧客No', '') ? cust[fv(r, '顧客No', '')] : (fv(r, 'ネタNo', '') ? neta[fv(r, 'ネタNo', '')] : null);
