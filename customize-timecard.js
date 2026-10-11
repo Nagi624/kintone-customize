@@ -4,15 +4,14 @@
  *   (freee人事労務の従業員番号と同じ値。freee反映時の従業員特定キー)
  * - 休憩: 通常勤務/早退は90分固定、半休/終日休/休日は0分として自動セットし、編集不可にする
  *   (勤務時間の計算式側でも同じ値を固定で使っているため、表示を揃える目的)
- * - 20日締め: 新規作成時に「前月21日〜当月20日」の全日分の明細行を自動生成する
- *   (平日=通常勤務 9:00〜17:00、土日・祝日=休日)。起算日を変えるとその日を含む締め期間で作り直す
+ * - 月末締め: 新規作成時に「当月1日〜月末」の全日分の明細行を自動生成する(2026-10-12に20日締めから変更)
+ *   (平日=通常勤務 9:00〜17:00、土日・祝日=休日)。起算日を変えるとその日を含む月で作り直す
  *   祝日は holidays-jp API から取得し、取得できなければ土日のみ休日にする
  */
 (function () {
   'use strict';
 
   var FIXED_BREAK_MIN = 90;
-  var CLOSING_DAY = 20;
   var START_TIME = '09:00';
   var END_TIME = '17:00';
   var HOLIDAY_API = 'https://holidays-jp.github.io/api/v1/date.json';
@@ -59,13 +58,10 @@
     field.disabled = true;
   }
 
-  // 基準日を含む締め期間(前月21日〜当月20日)を返す
+  // 基準日を含む締め期間(当月1日〜月末)を返す
   function closingPeriod(base) {
-    var y = base.getFullYear();
-    var m = base.getMonth();
-    if (base.getDate() <= CLOSING_DAY) m -= 1;
-    var start = new Date(y, m, CLOSING_DAY + 1);
-    var end = new Date(start.getFullYear(), start.getMonth() + 1, CLOSING_DAY);
+    var start = new Date(base.getFullYear(), base.getMonth(), 1);
+    var end = new Date(base.getFullYear(), base.getMonth() + 1, 0);
     return { start: start, end: end };
   }
 
