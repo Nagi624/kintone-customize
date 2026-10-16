@@ -106,14 +106,50 @@
     return out;
   }
 
-  function resolvePlaceUrl(url) {
-    if (PLACE_RE.test(url)) return kintone.Promise.resolve(url.match(PLACE_RE)[0]);
-    if (!kintone.proxy) return kintone.Promise.resolve('');
+  // 短縮URLの行き先は2種類(2026-10-16確認)
+  //  - パソコンで作った共有リンク: …/maps/place/店名/@緯度,経度… → {place: URL}
+  //  - スマホアプリの共有(末尾 ?g_st=ic 等): maps.google.com?q=〒031-0802 青森県…14 和食処鹿ぬか&ftid=… → {q: 文字}
+  //    kintone.proxy は転送をたどってしまうので、行き先のページ先頭の <link href="/maps/preview/place?…&q=…"> に
+  //    そのまま写っている q(こちらが送ったURLの文字)を読む
+  function resolveLink(url) {
+    if (PLACE_RE.test(url)) return kintone.Promise.resolve({ place: url.match(PLACE_RE)[0] });
+    var direct = url.match(/[?&]q=([^&#]+)/);
+    if (direct) return kintone.Promise.resolve({ q: decodeQ(direct[1]) });
+    if (!kintone.proxy) return kintone.Promise.resolve({});
     return kintone.proxy(url, 'GET', {}, {}).then(function (r) {
       var body = String(r[0] || '').replace(/\\u003d/g, '=').replace(/\\u0026/g, '&');
       var m = body.match(PLACE_RE);
-      return m ? m[0] : '';
-    }).catch(function () { return ''; });
+      if (m) return { place: m[0] };
+      var q = body.match(/\/maps\/preview\/place\?[^"]*?(?:[?&]|&amp;)q=([^&"]+)/);
+      return q ? { q: decodeQ(q[1]) } : {};
+    }).catch(function () { return {}; });
+  }
+  function decodeQ(s) { try { return decodeURIComponent(s.replace(/\+/g, ' ')); } catch (e) { return ''; } }
+
+  // q の文字 → {name, zip, pref, city, rest}。日本の店は「〒番号 住所 店名」、それ以外は「店名, 住所」の並び
+  var BUILDING = /(ビル|ビルディング|号館|[0-9０-９]+[FＦ階]|[0-9０-９]+号室?)$/;
+  function parseQ(q) {
+    var out = { name: '', zip: '', pref: '', city: '', rest: '' };
+    var t = String(q || '').trim();
+    var zm = t.match(/^〒?\s*([0-9０-９]{3})[-－−‐]?([0-9０-９]{4})\s+/);
+    if (zm) { out.zip = (zm[1] + '-' + zm[2]).normalize('NFKC'); t = t.slice(zm[0].length); }
+    if (!zm && t.indexOf(',') > 0) { // 「店名, 住所」
+      out.name = t.slice(0, t.indexOf(',')).trim();
+      t = t.slice(t.indexOf(',') + 1).trim();
+      var sc0 = splitCity(t.normalize('NFKC'));
+      out.city = sc0.city; out.rest = sc0.rest;
+      return out;
+    }
+    var tokens = t.split(/\s+/);
+    var addr = tokens.shift() || '';
+    while (tokens.length > 1 && BUILDING.test(tokens[0])) addr += ' ' + tokens.shift(); // 住所の後ろのビル名・階は住所へ
+    out.name = tokens.join(' ');
+    var a = addr.normalize('NFKC').replace(/[−‐‑–—]/g, '-');
+    var pm = a.match(PREFS);
+    if (pm) { out.pref = pm[1]; a = a.slice(pm[1].length); }
+    var sc = splitCity(a);
+    out.city = sc.city; out.rest = sc.rest;
+    return out;
   }
 
   // 緯度経度 → {zip, pref, city, rest}(OpenStreetMap。札幌の「南2条西6」は「南2条西6丁目」にする)
@@ -137,7 +173,16 @@
     var sc = splitCity(p.addr);
     p.city = sc.city; p.rest = sc.rest; p.fromUrl = false; p.note = '';
     if (!p.url || p.addr) return kintone.Promise.resolve(p);
-    return resolvePlaceUrl(p.url).then(function (place) {
+    return resolveLink(p.url).then(function (res) {
+      if (res.q) {
+        var g = parseQ(res.q);
+        if (!p.name || p.name === p.url) p.name = g.name;
+        p.zip = p.zip || g.zip; p.pref = p.pref || g.pref; p.city = g.city; p.rest = g.rest; p.addr = g.city + g.rest;
+        p.fromUrl = true;
+        p.note = 'URLから店名と住所を入れました。電話番号はGoogleマップで確認して入れてください。';
+        return p;
+      }
+      var place = res.place;
       if (!place) { p.note = 'URLから店名を読み取れませんでした。Googleマップで店名・住所を長押ししてコピーし、貼ってください。'; return p; }
       var f = fromPlaceUrl(place);
       if (!p.name || p.name === p.url) p.name = f.name;
