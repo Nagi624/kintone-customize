@@ -7,12 +7,13 @@
  *
  * - 上段: この顧客の案件(進行中)・次の連絡/予定・先方担当者・最近のやりとり を1枚に表示
  * - 📞 電話を記録: 結果(コール業務)・メモ・次回連絡日 → 活動履歴17に1件(対応種別=電話)。
- *   結果が「アポ獲得」のときだけ、商談日時・商談担当・提案商品を聞いて案件19を作る(進行中の案件があれば更新)
+ *   結果が「アポ獲得」のときだけ、商談日時・商談に行く人・提案商品を聞いて案件19を作る(進行中の案件があれば更新)。
+ *   商談担当者は自分+商談に行く人(渡邉さんの「架電時フロー」(マニュアル12)どおり、両方の予定表に入る)
  *   → 案件の次回商談日からスケジュール34の予定を作る(customize-schedule-links.js と同じ処理)。
  *   案件は「商談が決まったら作る」もので、電話1本ごとには作らない。
  * - 💼 案件を作る・進める: フェーズ・確度・次回商談日などを小窓で更新(新規も可)。次回商談日を変えたら予定も作る/動かす。
  * - 📅 予定を入れる: 顧客・案件を入れた状態でスケジュールの新規作成画面を開く(受け取りは customize-schedule.js)。
- * - 📍 Googleマップ: 登録時のGoogleマップURL、無ければ店名+住所の検索で開く。
+ * - 📍 Googleマップ: GoogleマップURL(無ければWebサイトに入っているGoogleマップのURL)、どちらも無ければ店名+住所の検索で開く。
  * - 一覧画面「📞 Googleマップから電話先を登録」: Googleマップでコピーした文字(スマホは共有)を貼ると店名・電話・住所を読み取り、
  *   顧客を登録(顧客ランクは仮のD)して、そのまま電話の結果まで記録する。顧客管理に同じお店があれば登録させずそちらへ案内。
  *   ネタリストに同じお店があれば、履歴が無いネタは顧客管理へ移し(ネタは削除)、履歴があるネタはネタリストの「顧客管理へ登録」へ案内。
@@ -243,7 +244,9 @@
     b3.addEventListener('click', function () { openSchedule(ctx); });
     bar.appendChild(b1); bar.appendChild(b2); bar.appendChild(b3);
     // Googleマップ: 登録時のURLがあればそれ、無ければ店名+住所で検索
-    var murl = fv(r, 'GoogleマップURL', '') || 'https://www.google.com/maps/search/?api=1&query=' +
+    var web = fv(r, 'Webサイト', '');
+    var murl = fv(r, 'GoogleマップURL', '') || (/google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/.test(web) ? web : '') ||
+      'https://www.google.com/maps/search/?api=1&query=' +
       encodeURIComponent([fv(r, '会社名', ''), fv(r, '都道府県', ''), fv(r, '住所', '')].join(' ').trim());
     var b4 = el('button', { type: 'button', className: 'chub-btn' }, '📍 Googleマップ');
     b4.addEventListener('click', function () { window.open(murl, '_blank'); });
@@ -318,7 +321,7 @@
       '<label>商談の日時</label><input type="datetime-local" class="c-apo-dt">' +
       '<div class="chub-row2"><div><label>商談に行く人</label><select class="c-apo-user"></select></div>' +
       '<div><label>提案商品</label><select class="c-apo-item"></select></div></div>' +
-      '<div class="chub-sub" style="margin:8px 0 0">' + (open.length ? '進行中の案件(' + esc(fv(open[0], '提案商品', '') || '商品未選択') + ')の次回商談日を更新します。' : '案件を新しく作り、') + 'スケジュールにも予定が入ります。</div></div>' +
+      '<div class="chub-sub" style="margin:8px 0 0">' + (open.length ? '進行中の案件(' + esc(fv(open[0], '提案商品', '') || '商品未選択') + ')の次回商談日を更新します。' : '案件を新しく作り、') + 'あなたと商談に行く人の両方の予定表に入ります。</div></div>' +
       '<label>メモ(話した内容・相手の名前・かけ直す時間など)</label><textarea class="c-memo"></textarea>' +
       (opts.hasNextField ? '<label>次回連絡日(またかけるとき)</label><input type="date" class="c-next">' : '');
     var chosen = '';
@@ -409,28 +412,31 @@
     var dealP = kintone.Promise.resolve(open.length === 1 ? open[0].$id.value : '');
     if (chosen === 'アポ獲得') {
       var pickedUser = p.apoUser;
+      // 商談担当者=アポを取った自分+商談に行く人(架電時フローどおり、両方の予定表に入れて漏れを防ぐ)
+      var team = [{ code: me.code, name: me.name }];
+      if (pickedUser.code && pickedUser.code !== me.code) team.push(pickedUser);
       var item = p.item;
       if (open.length) {
         var d = open[0];
         var prev = fv(d, '次回商談日', '');
-        var upd = { 次回商談日: { value: apoDt }, 商談担当者: { value: [{ code: pickedUser.code }] } };
+        var upd = { 次回商談日: { value: apoDt }, 商談担当者: { value: users(team) } };
         if (!fv(d, '商談フェーズ', '')) upd.商談フェーズ = { value: '商談予定' };
         if (!fv(d, '提案商品', '')) upd.提案商品 = { value: item };
         if (!fv(d, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
         dealP = api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: d.$id.value, record: upd }).then(function () {
           msgs.push('案件(' + (fv(d, '提案商品', '') || item) + ')の次回商談日を ' + dtLabel(apoDt) + ' にしました。');
-          return pushToSchedule(d.$id.value, { 会社名: company, 提案商品: fv(d, '提案商品', '') || item, 顧客No_: custNo, 商談担当者: [pickedUser], 次回商談日: apoDt }, prev);
+          return pushToSchedule(d.$id.value, { 会社名: company, 提案商品: fv(d, '提案商品', '') || item, 顧客No_: custNo, 商談担当者: team, 次回商談日: apoDt }, prev);
         }).then(function (m2) { if (m2) msgs.push(m2); return d.$id.value; });
       } else {
         var rec = {
           会社名: { value: company }, 提案商品: { value: item }, 商談フェーズ: { value: '商談予定' },
-          主担当: { value: [{ code: me.code }] }, 商談担当者: { value: [{ code: pickedUser.code }] }, アポ獲得者: { value: [{ code: me.code }] },
+          主担当: { value: [{ code: me.code }] }, 商談担当者: { value: users(team) }, アポ獲得者: { value: [{ code: me.code }] },
           初回商談日: { value: ymd(new Date(apoDt)) }, 次回商談日: { value: apoDt },
           詳細: { value: memo ? '(アポ獲得時のメモ)' + memo : '' }
         };
         dealP = api('/k/v1/record', 'POST', { app: DEAL_APP_ID, record: rec }).then(function (resp) {
           msgs.push('案件(' + item + ')を作りました。');
-          return pushToSchedule(resp.id, { 会社名: company, 提案商品: item, 顧客No_: custNo, 商談担当者: [pickedUser], 次回商談日: apoDt }, '')
+          return pushToSchedule(resp.id, { 会社名: company, 提案商品: item, 顧客No_: custNo, 商談担当者: team, 次回商談日: apoDt }, '')
             .then(function (m2) { if (m2) msgs.push(m2); return resp.id; });
         });
       }
