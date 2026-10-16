@@ -129,7 +129,11 @@
       '.chub-btns button{padding:9px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:14px}',
       '.chub-btns button.primary{border-color:#2563eb;background:#2563eb;color:#fff}',
       '.chub-btns button:disabled{opacity:.5;cursor:default}',
-      '.chub-row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}'
+      '.chub-row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}',
+      '.chub-chips{display:flex;flex-wrap:wrap;gap:6px}',
+      '.chub-chip{padding:7px 12px;border:1px solid #cbd5e1;border-radius:16px;background:#fff;cursor:pointer;font-size:13px}',
+      '.chub-chip.on{background:#2563eb;border-color:#2563eb;color:#fff}',
+      '.chub-chip.on::before{content:"✓ "}'
     ].join('\n');
     var s = el('style', { id: 'chub-style' });
     s.textContent = css;
@@ -178,7 +182,8 @@
   function loadMembers() {
     if (memberCache) return kintone.Promise.resolve(memberCache);
     var me = kintone.getLoginUser();
-    return api('/k/v1/records', 'GET', { app: MEMBER_APP_ID, query: '表示 in ("する") order by 表示順 asc limit 100', fields: ['メンバー'] })
+    // 「表示」(スケジュールに出すか)では絞らない。商談に行く人は誰でも選べるようにする(2026-10-16)
+    return api('/k/v1/records', 'GET', { app: MEMBER_APP_ID, query: 'order by 表示順 asc limit 100', fields: ['メンバー'] })
       .then(function (resp) {
         var list = [];
         resp.records.forEach(function (r) { fv(r, 'メンバー', []).forEach(function (u) { if (!list.some(function (x) { return x.code === u.code; })) list.push(u); }); });
@@ -186,6 +191,32 @@
         memberCache = list;
         return list;
       }).catch(function () { memberCache = [{ code: me.code, name: me.name }]; return memberCache; });
+  }
+
+  // 商談に行く人を選ぶボタン群。selected: 最初に選んでおく人 [{code,name}]。get() で選ばれている人を返す
+  function userPicker(box, selected) {
+    var chosen = {};
+    var order = [];
+    (selected || []).forEach(function (u) { chosen[u.code] = u; });
+    function draw(list) {
+      box.innerHTML = '';
+      list.forEach(function (u) {
+        if (order.indexOf(u.code) < 0) order.push(u.code);
+        var b = el('button', { type: 'button', 'class': 'chub-chip' + (chosen[u.code] ? ' on' : '') }, esc(u.name));
+        b.addEventListener('click', function () {
+          if (chosen[u.code]) delete chosen[u.code]; else chosen[u.code] = u;
+          b.classList.toggle('on', !!chosen[u.code]);
+        });
+        box.appendChild(b);
+      });
+    }
+    loadMembers().then(function (list) {
+      // 候補に無い人(今の商談担当者など)も出す
+      var all = list.slice();
+      (selected || []).forEach(function (u) { if (!all.some(function (x) { return x.code === u.code; })) all.push(u); });
+      draw(all);
+    });
+    return { get: function () { return order.filter(function (c) { return chosen[c]; }).map(function (c) { return chosen[c]; }); } };
   }
 
   // ---------- スケジュール連動(customize-schedule-links.js の pushToSchedule と同じ考え方) ----------
@@ -320,8 +351,8 @@
     w.innerHTML = '<label>結果</label><div class="chub-results"></div>' +
       '<div class="chub-apo" style="display:none"><b>🎉 アポ獲得 — 商談の予定</b>' +
       '<label>商談の日時</label><input type="datetime-local" class="c-apo-dt">' +
-      '<div class="chub-row2"><div><label>商談に行く人</label><select class="c-apo-user"></select></div>' +
-      '<div><label>提案商品</label><select class="c-apo-item"></select></div></div>' +
+      '<label>商談に行く人(押すたびに選ぶ/外す。何人でも)</label><div class="chub-chips c-apo-users"></div>' +
+      '<label>提案商品</label><select class="c-apo-item"></select>' +
       '<div class="chub-sub" style="margin:8px 0 0">' + (open.length ? '進行中の案件(' + esc(fv(open[0], '提案商品', '') || '商品未選択') + ')の次回商談日を更新します。' : '案件を新しく作り、') + 'あなたと商談に行く人の両方の予定表に入ります。</div></div>' +
       '<label>メモ(話した内容・相手の名前・かけ直す時間など)</label><textarea class="c-memo"></textarea>' +
       (opts.hasNextField ? '<label>次回連絡日(またかけるとき)</label><input type="date" class="c-next">' : '');
@@ -345,25 +376,20 @@
       if (v === (open.length ? fv(open[0], '提案商品', '') : 'MEO代行')) o.selected = true;
       itemSel.appendChild(o);
     });
-    var userSel = w.querySelector('.c-apo-user');
     var me = kintone.getLoginUser();
-    loadMembers().then(function (list) {
-      list.forEach(function (u) {
-        var o = el('option', { value: u.code }, esc(u.name));
-        if (u.code === me.code) o.selected = true;
-        userSel.appendChild(o);
-      });
-    });
+    // 最初は自分(アポを取った人)を選んでおく。訪問する人を足す
+    var picker = userPicker(w.querySelector('.c-apo-users'), [{ code: me.code, name: me.name }]);
     return {
       el: w,
       read: function () {
         if (!chosen) { alert('結果を選んでください'); return null; }
         var apoDt = fromLocalInput(w.querySelector('.c-apo-dt').value);
         if (chosen === 'アポ獲得' && !apoDt) { alert('商談の日時を入れてください'); return null; }
+        if (chosen === 'アポ獲得' && !picker.get().length) { alert('商談に行く人を選んでください'); return null; }
         return {
           open: open, chosen: chosen, memo: w.querySelector('.c-memo').value.trim(),
           next: opts.hasNextField ? w.querySelector('.c-next').value : '', prevNext: opts.nextValue || '', hasNextField: opts.hasNextField,
-          apoDt: apoDt, apoUser: { code: userSel.value, name: userSel.options[userSel.selectedIndex] ? userSel.options[userSel.selectedIndex].text : '' },
+          apoDt: apoDt, apoUsers: picker.get(),
           item: itemSel.value
         };
       }
@@ -403,7 +429,7 @@
   }
 
   // 電話1本の記録: アポ獲得なら案件を作る/更新して予定も入れ、活動履歴に1件、次回連絡日を更新する。
-  // p: {custNo, company, open(進行中の案件), chosen, memo, next, prevNext, hasNextField, apoDt, apoUser, item}
+  // p: {custNo, company, open(進行中の案件), chosen, memo, next, prevNext, hasNextField, apoDt, apoUsers, item}
   // msgs: 済んだことを順に足していく(途中で失敗したときに伝えるため)
   function recordCall(p, msgs) {
     var me = kintone.getLoginUser();
@@ -412,10 +438,8 @@
     // 1. アポ獲得なら案件を作る/更新して、予定も入れる
     var dealP = kintone.Promise.resolve(open.length === 1 ? open[0].$id.value : '');
     if (chosen === 'アポ獲得') {
-      var pickedUser = p.apoUser;
-      // 商談担当者=アポを取った自分+商談に行く人(架電時フローどおり、両方の予定表に入れて漏れを防ぐ)
-      var team = [{ code: me.code, name: me.name }];
-      if (pickedUser.code && pickedUser.code !== me.code) team.push(pickedUser);
+      // 商談担当者=選んだ人(最初は自分が選ばれている。架電時フローどおり、アポを取った人と行く人の両方を入れると両方の予定表に入る)
+      var team = p.apoUsers && p.apoUsers.length ? p.apoUsers : [{ code: me.code, name: me.name }];
       var item = p.item;
       if (open.length) {
         var d = open[0];
@@ -470,7 +494,8 @@
       '<div class="chub-row2"><div><label>提案商品</label><select class="d-item"></select></div>' +
       '<div><label>商談フェーズ</label><select class="d-phase"></select></div></div>' +
       '<div class="chub-row2"><div><label>確度</label><select class="d-kakudo"></select></div>' +
-      '<div><label>商談に行く人</label><select class="d-user"></select></div></div>' +
+      '<div></div></div>' +
+      '<label>商談担当者(商談に行く人。押すたびに選ぶ/外す。何人でも)</label><div class="chub-chips d-users"></div>' +
       '<label>次回商談日(入れるとスケジュールにも入ります)</label><input type="datetime-local" class="d-next">' +
       '<div class="chub-row2"><div><label>受注予定日</label><input type="date" class="d-due"></div>' +
       '<div><label>売上(円)</label><input type="number" class="d-amount" min="0" step="1"></div></div>' +
@@ -491,9 +516,8 @@
       if (blank) sel.appendChild(el('option', { value: '' }, '(未選択)'));
       optionsOf(props, code, fallback).forEach(function (v) { var o = el('option', { value: v }, esc(v)); if (v === cur) o.selected = true; sel.appendChild(o); });
     }
-    var uSel = m.querySelector('.d-user');
     var me = kintone.getLoginUser();
-    var membersP = loadMembers();
+    var picker = null;
     function load() {
       var d = open.filter(function (x) { return x.$id.value === tSel.value; })[0] || null;
       fill(m.querySelector('.d-item'), '提案商品', ['RIDE CAST(タクシー動画広告)', 'MEO代行', 'その他'], d ? fv(d, '提案商品', '') : 'MEO代行', true);
@@ -503,12 +527,9 @@
       m.querySelector('.d-due').value = d ? fv(d, '受注予定日', '') : '';
       m.querySelector('.d-amount').value = d ? fv(d, '売上', '') : '';
       m.querySelector('.d-open').innerHTML = d ? '<a href="' + dealUrl(d.$id.value) + '">案件の画面</a>' : '保存後の案件の画面';
-      var cur = d && fv(d, '商談担当者', []).length ? fv(d, '商談担当者', [])[0].code : me.code;
-      membersP.then(function (list) {
-        uSel.innerHTML = '';
-        uSel.appendChild(el('option', { value: '' }, '(未選択)'));
-        list.forEach(function (u) { var o = el('option', { value: u.code }, esc(u.name)); if (u.code === cur) o.selected = true; uSel.appendChild(o); });
-      });
+      // 今の商談担当者(新しい案件なら自分)を選んだ状態にする
+      var cur = d && fv(d, '商談担当者', []).length ? fv(d, '商談担当者', []) : [{ code: me.code, name: me.name }];
+      picker = userPicker(m.querySelector('.d-users'), cur);
       return d;
     }
     var current = load();
@@ -523,7 +544,7 @@
       if (!phase) { alert('商談フェーズを選んでください'); return; }
       var next = fromLocalInput(m.querySelector('.d-next').value);
       var amount = m.querySelector('.d-amount').value;
-      var picked = uSel.value ? [{ code: uSel.value, name: uSel.options[uSel.selectedIndex].text }] : [];
+      var picked = picker ? picker.get() : [];
       var rec = {
         提案商品: { value: item }, 商談フェーズ: { value: phase }, 確度: { value: m.querySelector('.d-kakudo').value },
         次回商談日: { value: next || null }, 受注予定日: { value: m.querySelector('.d-due').value || null },
