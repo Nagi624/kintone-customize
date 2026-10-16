@@ -68,6 +68,7 @@
       '<textarea class="p-paste" placeholder="ここに貼り付け(URLだけでも可)" style="min-height:64px"></textarea><div class="p-note lp-sub" style="margin:6px 0 0"></div>' +
       '<label>会社名・店名(必須)</label><input type="text" class="p-name">' +
       '<div class="lp-row2"><div><label>電話番号</label><input type="tel" class="p-phone"></div><div><label>大分類</label><select class="p-cat"></select></div></div>' +
+      '<label>中分類(大分類を選ぶと候補が出ます)</label><select class="p-sub"></select>' +
       '<div class="lp-row3"><div><label>〒</label><input type="text" class="p-zip"></div><div><label>都道府県</label><input type="text" class="p-pref" value="北海道"></div><div><label>市区町村</label><input type="text" class="p-city"></div></div>' +
       '<label>丁目番地等</label><input type="text" class="p-rest">' +
       '<label>GoogleマップのURL(あれば)</label><input type="url" class="p-url">' +
@@ -100,7 +101,10 @@
       sel.appendChild(new Option('(未選択)', ''));
       var o = (props['大分類'] && props['大分類'].options) || {};
       Object.keys(o).sort(function (a, b) { return Number(o[a].index) - Number(o[b].index); }).forEach(function (v) { sel.appendChild(new Option(v, v)); });
-    }).catch(function () { $('.p-cat').appendChild(new Option('(未選択)', '')); });
+    }).catch(function () { $('.p-cat').appendChild(new Option('(未選択)', '')); }).then(function () {
+      // 中分類は分類マスタ(30)から大分類で絞って取得し、ルックアップ「中分類選択」にキーを入れる(レコード画面の「取得」と同じ結果)
+      MP().bindMinor($('.p-cat'), $('.p-sub'));
+    });
 
     var pasteSeq = 0;
     $('.p-paste').addEventListener('input', function () {
@@ -158,7 +162,7 @@
         var vals = {
           電話番号: $('.p-phone').value.trim(), 郵便番号: $('.p-zip').value.trim(), 都道府県: $('.p-pref').value.trim(),
           市区町村: $('.p-city').value.trim(), 丁目番地等: MP().toWideAddr($('.p-rest').value.trim()),
-          大分類: $('.p-cat').value, GoogleマップURL: $('.p-url').value.trim(), 次回架電予定日: $('.p-next').value
+          大分類: $('.p-cat').value, 中分類選択: $('.p-sub').value, GoogleマップURL: $('.p-url').value.trim(), 次回架電予定日: $('.p-next').value
         };
         Object.keys(vals).forEach(function (k) { if (vals[k] && (props[k] || !Object.keys(props).length)) rec[k] = { value: vals[k] }; });
         if (chosen) {

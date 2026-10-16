@@ -199,5 +199,33 @@
     });
   }
 
-  window.TaimeiMapsPaste = { PREFS: PREFS, digits: digits, toWideAddr: toWideAddr, parse: parse, parseAsync: parseAsync, splitCity: splitCity, findSame: findSame };
+  // 中分類の候補(分類マスタ30から、大分類で絞って取得)。ルックアップ「中分類選択」に入れる値はキー(大分類/中分類)。
+  // 18・29の貼り付け登録の小窓で使う(2026-10-17)。マスタを見られないときは空
+  var minorCache = {};
+  function minorOptions(major) {
+    if (!major) return kintone.Promise.resolve([]);
+    if (minorCache[major]) return kintone.Promise.resolve(minorCache[major]);
+    return kintone.api(kintone.api.url('/k/v1/records', true), 'GET', { app: 30, fields: ['キー', '中分類'],
+      query: '大分類 = "' + major.replace(/"/g, '\\"') + '" order by 中分類 asc limit 500' }).then(function (r) {
+      minorCache[major] = r.records.map(function (x) { return { key: x.キー.value, minor: x.中分類.value }; });
+      return minorCache[major];
+    }).catch(function () { return []; });
+  }
+  // 大分類のselectが変わったら、中分類のselectの候補を入れ直す。selected: 最初に選んでおくキー
+  function bindMinor(majorSel, minorSel, selected) {
+    function load() {
+      minorSel.innerHTML = '';
+      minorSel.appendChild(new Option(majorSel.value ? '(未選択)' : '(先に大分類を選ぶ)', ''));
+      return minorOptions(majorSel.value).then(function (list) {
+        list.forEach(function (x) { minorSel.appendChild(new Option(x.minor, x.key)); });
+        if (selected && list.some(function (x) { return x.key === selected; })) minorSel.value = selected;
+        selected = '';
+      });
+    }
+    majorSel.addEventListener('change', load);
+    return load();
+  }
+
+  window.TaimeiMapsPaste = { PREFS: PREFS, digits: digits, toWideAddr: toWideAddr, parse: parse, parseAsync: parseAsync, splitCity: splitCity, findSame: findSame,
+    minorOptions: minorOptions, bindMinor: bindMinor };
 })();

@@ -800,6 +800,7 @@
       '<textarea class="q-paste" placeholder="ここに貼り付け(URLだけでも可)" style="min-height:64px"></textarea><div class="q-note chub-sub" style="margin:6px 0 0"></div>' +
       '<label>会社名・店名(必須)</label><input type="text" class="q-name">' +
       '<div class="chub-row2"><div><label>電話番号</label><input type="tel" class="q-phone"></div><div><label>大分類</label><select class="q-cat"></select></div></div>' +
+      '<label>中分類(大分類を選ぶと候補が出ます)</label><select class="q-sub"></select>' +
       '<div class="chub-row2"><div><label>〒</label><input type="text" class="q-zip"></div><div><label>都道府県</label><select class="q-pref"></select></div></div>' +
       '<label>住所</label><input type="text" class="q-addr">' +
       '<label>GoogleマップのURL(あれば)</label><input type="url" class="q-url">' +
@@ -822,6 +823,8 @@
         });
       });
     }).catch(function () { $('.q-pref').appendChild(el('option', { value: '北海道' }, '北海道')); }).then(function () {
+      // 中分類は分類マスタ(30)から大分類で絞って取得し、ルックアップ「中分類選択」にキーを入れる(レコード画面の「取得」と同じ結果)
+      MP().bindMinor($('.q-cat'), $('.q-sub'));
       return api('/k/v1/app/form/fields', 'GET', { app: DEAL_APP_ID }).then(function (r) { return r.properties; }).catch(function () { return {}; });
     }).then(function (dealProps) {
       form = buildCallForm({ open: [], dealProps: dealProps, hasNextField: hasNextField, nextValue: '' });
@@ -906,9 +909,12 @@
           都道府県: $('.q-pref').value,
           住所: toWideAddr($('.q-addr').value.trim()) || (lead ? fv(lead, '市区町村', '') + fv(lead, '丁目番地等', '') : ''),
           大分類: $('.q-cat').value || (lead ? fv(lead, '大分類', '') : ''),
+          中分類選択: $('.q-sub').value || (lead && !$('.q-cat').value ? fv(lead, '中分類選択', '') : ''),
           GoogleマップURL: $('.q-url').value.trim() || (lead ? fv(lead, 'GoogleマップURL', '') : '')
         };
-        if (lead) ['中分類', '業種メモ', '営業時間', '定休日', '緯度', '経度'].forEach(function (k) { vals[k] = fv(lead, k, ''); });
+        // 中分類(表示用)はルックアップの写し先。中分類選択が無いネタだけ、文字のまま移す
+        if (lead && !vals.中分類選択) vals.中分類 = fv(lead, '中分類', '');
+        if (lead) ['業種メモ', '営業時間', '定休日', '緯度', '経度'].forEach(function (k) { vals[k] = fv(lead, k, ''); });
         if (hasNextField && call.next) vals.次回連絡日 = call.next;
         Object.keys(vals).forEach(function (k) { if (vals[k] !== '' && (props[k] || !Object.keys(props).length)) rec[k] = { value: vals[k] }; });
         return api('/k/v1/record', 'POST', { app: CUSTOMER_APP_ID, record: rec });
