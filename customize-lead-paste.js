@@ -1,7 +1,7 @@
 /*
  * ネタリスト(app29) 一覧画面「📋 Googleマップから貼り付けて登録」  PC/スマホ両対応(2026-10-16)
  *
- * Googleマップでコピーした文字(スマホは「共有」→コピー)を貼ると、店名・電話・〒・都道府県・市区町村・丁目番地等・URLを
+ * Googleマップでコピーした文字(スマホのアプリの「共有」→コピーはURLだけ。その場合はリンク先から店名、位置から住所を補う)を貼ると、店名・電話・〒・都道府県・市区町村・丁目番地等・URLを
  * 読み取ってネタを1件登録する(読み取り・重複チェックは customize-maps-paste.js と共用。同じアプリに登録が必要)。
  * - 電話した場合は結果も選べる → 架電履歴に1行(日付=今日・時刻・担当=自分・種別=電話)。選ばなければ未着手で登録
  * - 顧客管理・ネタリストに同じお店(会社名か電話番号)があれば登録させず、そちらを案内する
@@ -65,7 +65,7 @@
     m.className = 'lp-modal';
     m.innerHTML = '<h3>📋 Googleマップから貼り付けて登録</h3>' +
       '<div class="lp-sub">Googleマップでお店を開き、店名〜電話番号の部分をコピー(スマホ・iPadは「共有」→コピー)して貼り付けると読み取ります。手で入れても直してもかまいません。</div>' +
-      '<textarea class="p-paste" placeholder="ここに貼り付け" style="min-height:64px"></textarea>' +
+      '<textarea class="p-paste" placeholder="ここに貼り付け(URLだけでも可)" style="min-height:64px"></textarea><div class="p-note lp-sub" style="margin:6px 0 0"></div>' +
       '<label>会社名・店名(必須)</label><input type="text" class="p-name">' +
       '<div class="lp-row2"><div><label>電話番号</label><input type="tel" class="p-phone"></div><div><label>大分類</label><select class="p-cat"></select></div></div>' +
       '<div class="lp-row3"><div><label>〒</label><input type="text" class="p-zip"></div><div><label>都道府県</label><input type="text" class="p-pref" value="北海道"></div><div><label>市区町村</label><input type="text" class="p-city"></div></div>' +
@@ -102,13 +102,20 @@
       Object.keys(o).sort(function (a, b) { return Number(o[a].index) - Number(o[b].index); }).forEach(function (v) { sel.appendChild(new Option(v, v)); });
     }).catch(function () { $('.p-cat').appendChild(new Option('(未選択)', '')); });
 
+    var pasteSeq = 0;
     $('.p-paste').addEventListener('input', function () {
-      var p = MP().parse(this.value);
-      var sc = MP().splitCity(p.addr);
-      $('.p-name').value = p.name; $('.p-phone').value = p.phone; $('.p-zip').value = p.zip;
-      if (p.pref) $('.p-pref').value = p.pref;
-      $('.p-city').value = sc.city; $('.p-rest').value = sc.rest; $('.p-url').value = p.url;
-      checkDup();
+      var my = ++pasteSeq;
+      var note = $('.p-note');
+      note.textContent = '読み取り中…';
+      MP().parseAsync(this.value).then(function (p) {
+        if (my !== pasteSeq) return; // 貼り直されたら古い結果は使わない
+        $('.p-name').value = p.name; $('.p-phone').value = p.phone; $('.p-zip').value = p.zip;
+        if (p.pref) $('.p-pref').value = p.pref;
+        $('.p-city').value = p.city; $('.p-rest').value = p.rest; $('.p-url').value = p.url;
+        note.textContent = p.note || '';
+        note.style.color = p.fromUrl || !p.note ? '#64748b' : '#b91c1c';
+        checkDup();
+      });
     });
 
     var timer = null, seq = 0, blocked = false;

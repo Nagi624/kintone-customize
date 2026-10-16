@@ -583,7 +583,6 @@
   }
   function digits(s) { return MP().digits(s); }
   function toWideAddr(s) { return MP().toWideAddr(s); }
-  function parseMapsText(text) { return MP().parse(text); }
   function findSame(app, name, phone) { return MP().findSame(app, name, phone); }
 
   // ネタに履歴・担当者・予定があるか(あればネタリストの「顧客管理へ登録」で履歴ごと移してもらう)
@@ -603,7 +602,7 @@
     var m = el('div', { className: 'chub-modal', style: 'max-width:520px' });
     m.innerHTML = '<h3>📞 Googleマップから電話先を登録</h3>' +
       '<div class="chub-sub">Googleマップでお店を開き、店名〜電話番号の部分をコピー(スマホは「共有」→コピー)して貼り付けると読み取ります。手で入れてもかまいません。</div>' +
-      '<textarea class="q-paste" placeholder="ここに貼り付け" style="min-height:64px"></textarea>' +
+      '<textarea class="q-paste" placeholder="ここに貼り付け(URLだけでも可)" style="min-height:64px"></textarea><div class="q-note chub-sub" style="margin:6px 0 0"></div>' +
       '<label>会社名・店名(必須)</label><input type="text" class="q-name">' +
       '<div class="chub-row2"><div><label>電話番号</label><input type="tel" class="q-phone"></div><div><label>大分類</label><select class="q-cat"></select></div></div>' +
       '<div class="chub-row2"><div><label>〒</label><input type="text" class="q-zip"></div><div><label>都道府県</label><select class="q-pref"></select></div></div>' +
@@ -635,13 +634,22 @@
     });
 
     function fillIfEmpty(cls, v) { if (v && !$(cls).value) $(cls).value = v; }
+    // URLだけ貼られたときはリンク先から店名、位置から住所を補う(customize-maps-paste.js の parseAsync)
+    var pasteSeq = 0;
     function applyParsed() {
-      var p = parseMapsText($('.q-paste').value);
-      ['.q-name', '.q-phone', '.q-zip', '.q-addr', '.q-url'].forEach(function (c) { $(c).value = ''; });
-      fillIfEmpty('.q-name', p.name); fillIfEmpty('.q-phone', p.phone); fillIfEmpty('.q-zip', p.zip);
-      fillIfEmpty('.q-addr', p.addr); fillIfEmpty('.q-url', p.url);
-      if (p.pref) $('.q-pref').value = p.pref;
-      checkDup();
+      var my = ++pasteSeq;
+      var note = $('.q-note');
+      note.textContent = '読み取り中…';
+      MP().parseAsync($('.q-paste').value).then(function (p) {
+        if (my !== pasteSeq) return; // 貼り直されたら古い結果は使わない
+        ['.q-name', '.q-phone', '.q-zip', '.q-addr', '.q-url'].forEach(function (c) { $(c).value = ''; });
+        fillIfEmpty('.q-name', p.name); fillIfEmpty('.q-phone', p.phone); fillIfEmpty('.q-zip', p.zip);
+        fillIfEmpty('.q-addr', p.addr); fillIfEmpty('.q-url', p.url);
+        if (p.pref) $('.q-pref').value = p.pref;
+        note.textContent = p.note || '';
+        note.style.color = p.fromUrl || !p.note ? '#64748b' : '#b91c1c';
+        checkDup();
+      });
     }
     $('.q-paste').addEventListener('input', applyParsed);
 

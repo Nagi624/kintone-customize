@@ -90,5 +90,69 @@
     }).catch(function () { return []; });
   }
 
-  window.TaimeiMapsPaste = { PREFS: PREFS, digits: digits, toWideAddr: toWideAddr, parse: parse, splitCity: splitCity, findSame: findSame };
+  // ---------- URLだけが貼られたとき(スマホのGoogleマップアプリの「共有」→「コピー」は短いURLしかコピーしない) ----------
+  // 1. kintone.proxy でそのURLを1回開き(短縮URLの転送は kintone 側でたどられ、Googleマップのページが返る)、
+  //    中の「…/maps/place/店名/@緯度,経度…」のURLだけを取り出す。ページの他の中身(電話・住所・評価など)は読まない
+  // 2. 店名はそのURLから、住所は緯度経度から OpenStreetMap(Nominatim)で逆引きする(Googleの住所は使わない)。
+  //    緯度経度は保存しない(座標は毎時の自動処理が住所から国土地理院で求め直す)。電話番号は取れないので手入力
+  var PLACE_RE = /https:\/\/www\.google\.[a-z.]+\/maps\/place\/[^"'\\\s<>]+/;
+
+  function fromPlaceUrl(u) {
+    var out = { name: '', lat: null, lng: null };
+    var m = u.match(/\/maps\/place\/([^/?]+)/);
+    if (m) { try { out.name = decodeURIComponent(m[1].replace(/\+/g, ' ')); } catch (e) { /* 読めなければ空 */ } }
+    var c = u.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) || u.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/);
+    if (c) { out.lat = Number(c[1]); out.lng = Number(c[2]); }
+    return out;
+  }
+
+  function resolvePlaceUrl(url) {
+    if (PLACE_RE.test(url)) return kintone.Promise.resolve(url.match(PLACE_RE)[0]);
+    if (!kintone.proxy) return kintone.Promise.resolve('');
+    return kintone.proxy(url, 'GET', {}, {}).then(function (r) {
+      var body = String(r[0] || '').replace(/\\u003d/g, '=').replace(/\\u0026/g, '&');
+      var m = body.match(PLACE_RE);
+      return m ? m[0] : '';
+    }).catch(function () { return ''; });
+  }
+
+  // 緯度経度 → {zip, pref, city, rest}(OpenStreetMap。札幌の「南2条西6」は「南2条西6丁目」にする)
+  function reverseAddress(lat, lng) {
+    var url = 'https://nominatim.openstreetmap.org/reverse?format=jsonv2&accept-language=ja&zoom=18&addressdetails=1&lat=' + lat + '&lon=' + lng;
+    return fetch(url).then(function (r) { return r.json(); }).then(function (j) {
+      var a = j.address || {};
+      var rest = a.neighbourhood || a.quarter || a.hamlet || '';
+      if (/^[東西南北]\d+条[東西南北]?\d+$/.test(rest)) rest += '丁目';
+      if (a.house_number) rest += a.house_number;
+      return {
+        zip: a.postcode || '', pref: a.province || a.state || '',
+        city: (a.city || a.town || a.village || '') + (a.city_district || a.suburb || ''), rest: toWideAddr(rest)
+      };
+    }).catch(function () { return null; });
+  }
+
+  // 貼られた文字を読み、URLだけのときはリンク先から店名・住所を補う。戻り値は parse と同じ形 + {fromUrl, city, rest, note}
+  function parseAsync(text) {
+    var p = parse(text);
+    var sc = splitCity(p.addr);
+    p.city = sc.city; p.rest = sc.rest; p.fromUrl = false; p.note = '';
+    if (!p.url || p.addr) return kintone.Promise.resolve(p);
+    return resolvePlaceUrl(p.url).then(function (place) {
+      if (!place) { p.note = 'URLから店名を読み取れませんでした。Googleマップで店名・住所を長押ししてコピーし、貼ってください。'; return p; }
+      var f = fromPlaceUrl(place);
+      if (!p.name || p.name === p.url) p.name = f.name;
+      p.fromUrl = true;
+      if (f.lat === null) return p;
+      return reverseAddress(f.lat, f.lng).then(function (ad) {
+        if (ad) {
+          p.zip = p.zip || ad.zip; p.pref = p.pref || ad.pref; p.city = ad.city; p.rest = ad.rest;
+          p.addr = ad.city + ad.rest;
+        }
+        p.note = 'URLから店名と住所(地図の位置から求めた目安。番地は入らないことがあります)を入れました。電話番号はGoogleマップで確認して入れてください。';
+        return p;
+      });
+    });
+  }
+
+  window.TaimeiMapsPaste = { PREFS: PREFS, digits: digits, toWideAddr: toWideAddr, parse: parse, parseAsync: parseAsync, splitCity: splitCity, findSame: findSame };
 })();
