@@ -301,6 +301,13 @@
         '<br>次回商談: ' + (next ? '<span class="' + (late ? 'chub-warn' : '') + '">' + dtLabel(next) + (late ? '(過ぎています)' : '') + '</span>' : '<span class="chub-muted">未定</span>') +
         (names(fv(d, '商談担当者', [])) ? '<br><span class="chub-muted">商談: ' + esc(names(fv(d, '商談担当者', []))) + '</span>' : '') + '</div>';
     });
+    // 終了した案件(受注・失注・保留/中止)も見えるように並べる(「💼 案件を作る・進める」からも選べる)
+    data.deals.filter(function (d) { return CLOSED.indexOf(fv(d, '商談フェーズ', '')) >= 0; }).slice(0, 5).forEach(function (d) {
+      var ph = fv(d, '商談フェーズ', '');
+      h += '<div class="chub-item chub-muted"><a href="' + dealUrl(d.$id.value) + '" style="color:#64748b">' + esc(fv(d, '提案商品', '') || '(商品未選択)') + '</a> ' +
+        '<span class="chub-badge' + (ph === '受注' ? ' b-apo' : '') + '">' + esc(ph) + '</span>' +
+        (Number(fv(d, '売上', 0)) > 0 ? ' ' + Number(fv(d, '売上', 0)).toLocaleString() + '円' : '') + '</div>';
+    });
     grid.appendChild(el('div', { className: 'chub-card' }, h));
 
     // 次の連絡・予定
@@ -507,10 +514,19 @@
     document.body.appendChild(bg);
 
     var tSel = m.querySelector('.d-target');
-    open.forEach(function (d) {
-      tSel.appendChild(el('option', { value: d.$id.value }, esc((fv(d, '提案商品', '') || '商品未選択') + ' / ' + (fv(d, '商談フェーズ', '') || 'フェーズ未入力') + '(案件No.' + d.$id.value + ')')));
-    });
+    var all = data.deals;
+    var closedDeals = all.filter(function (d) { return CLOSED.indexOf(fv(d, '商談フェーズ', '')) >= 0; });
+    function dealOption(d) {
+      return el('option', { value: d.$id.value }, esc((fv(d, '提案商品', '') || '商品未選択') + ' / ' + (fv(d, '商談フェーズ', '') || 'フェーズ未入力') + '(案件No.' + d.$id.value + ')'));
+    }
+    open.forEach(function (d) { tSel.appendChild(dealOption(d)); });
     tSel.appendChild(el('option', { value: '' }, '＋ 新しい案件を作る'));
+    // 受注・失注・保留/中止の案件も直せるように、下に分けて出す
+    if (closedDeals.length) {
+      var grp = el('optgroup', { label: '終了した案件(受注・失注・保留/中止)' });
+      closedDeals.forEach(function (d) { grp.appendChild(dealOption(d)); });
+      tSel.appendChild(grp);
+    }
     if (target) tSel.value = target.$id.value; else if (!open.length) tSel.value = '';
 
     function fill(sel, code, fallback, cur, blank) {
@@ -521,7 +537,7 @@
     var me = kintone.getLoginUser();
     var picker = null;
     function load() {
-      var d = open.filter(function (x) { return x.$id.value === tSel.value; })[0] || null;
+      var d = all.filter(function (x) { return x.$id.value === tSel.value; })[0] || null;
       fill(m.querySelector('.d-item'), '提案商品', ['RIDE CAST(タクシー動画広告)', 'MEO代行', 'その他'], d ? fv(d, '提案商品', '') : 'MEO代行', true);
       fill(m.querySelector('.d-phase'), '商談フェーズ', ['商談予定', '提案中', '内示', '受注', '失注', '保留/中止'], d ? fv(d, '商談フェーズ', '') : '商談予定', true);
       fill(m.querySelector('.d-kakudo'), '確度', ['100%', '80%', '60%', '40%', '20%'], d ? fv(d, '確度', '') : '', true);
@@ -530,7 +546,7 @@
       m.querySelector('.d-amount').value = d ? fv(d, '売上', '') : '';
       m.querySelector('.d-open').innerHTML = d ? '<a href="' + dealUrl(d.$id.value) + '">案件の画面</a>' : '保存後の案件の画面';
       // 今の商談担当者(新しい案件なら自分)を選んだ状態にする
-      var cur = d && fv(d, '商談担当者', []).length ? fv(d, '商談担当者', []) : [{ code: me.code, name: me.name }];
+      var cur = d ? fv(d, '商談担当者', []) : [{ code: me.code, name: me.name }]; // 既存の案件は今の担当者のまま(空なら空)
       picker = userPicker(m.querySelector('.d-users'), cur);
       return d;
     }
