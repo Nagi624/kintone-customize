@@ -11,6 +11,9 @@
  *   商談担当者は自分+商談に行く人(渡邉さんの「架電時フロー」(マニュアル12)どおり、両方の予定表に入る)
  *   → 案件の次回商談日からスケジュール34の予定を作る(customize-schedule-links.js と同じ処理)。
  *   案件は「商談が決まったら作る」もので、電話1本ごとには作らない。
+ * - 🚶 訪問を記録(2026-10-17): 報告・案件のフェーズ/確度・次回連絡日 → 活動履歴17に1件(対応種別=商談(初回/2回目以降))。
+ *   今日の自分の訪問予定がこの会社にあれば、その予定の訪問として記録して予定を完了にする(スケジュールの訪問完了と同じ。二重にしない)。
+ *   活動履歴17は確認用(直接の入力・編集はしない)。記録はこのパネル・スケジュールの訪問完了・ネタリストからだけ入る。
  * - 💼 案件を作る・進める: フェーズ・確度・次回商談日などを小窓で更新(新規も可)。次回商談日を変えたら予定も作る/動かす。
  * - 📅 予定を入れる: 顧客・案件を入れた状態でスケジュールの新規作成画面を開く(受け取りは customize-schedule.js)。
  * - 📍 Googleマップ: GoogleマップURL(無ければWebサイトに入っているGoogleマップのURL)、どちらも無ければ店名+住所の検索で開く。
@@ -271,12 +274,14 @@
 
     var bar = el('div', { className: 'chub-bar' });
     var b1 = el('button', { type: 'button', className: 'chub-btn primary' }, '📞 電話を記録');
+    var b5 = el('button', { type: 'button', className: 'chub-btn primary' }, '🚶 訪問を記録');
     var b2 = el('button', { type: 'button', className: 'chub-btn' }, '💼 案件を作る・進める');
     var b3 = el('button', { type: 'button', className: 'chub-btn' }, '📅 予定を入れる');
     b1.addEventListener('click', function () { openCallDialog(ctx); });
+    b5.addEventListener('click', function () { openVisitDialog(ctx); });
     b2.addEventListener('click', function () { openDealDialog(ctx, open.length === 1 ? open[0] : null); });
     b3.addEventListener('click', function () { openSchedule(ctx); });
-    bar.appendChild(b1); bar.appendChild(b2); bar.appendChild(b3);
+    bar.appendChild(b1); bar.appendChild(b5); bar.appendChild(b2); bar.appendChild(b3);
     // Googleマップ: 登録時のURLがあればそれ、無ければ店名+住所で検索
     var web = fv(r, 'Webサイト', '');
     var murl = fv(r, 'GoogleマップURL', '') || (/google\.[a-z.]+\/maps|goo\.gl\/maps|maps\.app\.goo\.gl/.test(web) ? web : '') ||
@@ -490,6 +495,157 @@
       if (!p.hasNextField || next === (p.prevNext || '')) return null;
       return api('/k/v1/record', 'PUT', { app: CUSTOMER_APP_ID, id: custNo, record: { 次回連絡日: { value: next || null } } });
     });
+  }
+
+  // ---------- 🚶 訪問を記録(2026-10-17) ----------
+  // 予定の無い突発の訪問も、ここから活動履歴に1件残す(活動履歴は確認用で、直接は入力しない)。
+  // 今日の自分の訪問予定(まだ「予定」のもの)がこの会社にあれば、その予定の訪問として記録して予定を「完了」にする。
+  // スケジュールの「✅ 訪問完了」と同じ結果になり、同じ訪問が2件にならない。
+  function syncDealNext(no) {
+    if (!no) return kintone.Promise.resolve(null);
+    var base = '案件No = "' + no + '" and 元予定No = ""';
+    return kintone.Promise.all([
+      api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['開始日時'],
+        query: base + ' and 実施状況 in ("予定") and 種類 not in ("休暇") and 開始日時 >= NOW() order by 開始日時 asc limit 1' }),
+      api('/k/v1/record', 'GET', { app: DEAL_APP_ID, id: no })
+    ]).then(function (res) {
+      var next = res[0].records[0] ? fv(res[0].records[0], '開始日時', '') : '';
+      if (!next || next === fv(res[1].record, '次回商談日', '')) return null;
+      return api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: no, record: { 次回商談日: { value: next } } });
+    }).catch(function () { return null; });
+  }
+
+  function openVisitDialog(ctx) {
+    var r = ctx.record, data = ctx.data, props = data.dealProps || {};
+    var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
+    var company = fv(r, '会社名', '');
+    var me = kintone.getLoginUser();
+    var today = ymd(new Date());
+    var tm = new Date(); tm.setDate(tm.getDate() + 1);
+    var open = openDeals(data.deals);
+    // スケジュールを見られない人は予定なしとして扱う
+    api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '案件No', '内容'],
+      query: '顧客No = "' + custNo + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
+        '開始日時 >= "' + today + 'T00:00:00+09:00" and 開始日時 < "' + ymd(tm) + 'T00:00:00+09:00" order by 開始日時 asc limit 5' })
+      .then(function (resp) { return resp.records; }).catch(function () { return []; })
+      .then(function (plans) { showVisitDialog(plans); });
+
+    function showVisitDialog(plans) {
+      var hasNext = !!r['次回連絡日'];
+      var bg = el('div', { className: 'chub-bg' });
+      var m = el('div', { className: 'chub-modal' });
+      m.innerHTML = '<h3>🚶 訪問を記録</h3><div class="chub-sub">' + esc(company) + ' ・ 今日 ・ ' + esc(me.name) + '(活動履歴に1件残ります)</div>' +
+        (plans.length ? '<label>今日の訪問予定</label><select class="v-plan"></select>' +
+          '<div class="chub-sub v-plan-note" style="margin:6px 0 0"></div>' : '') +
+        '<label>案件</label><select class="v-deal"></select>' +
+        '<div class="chub-row2 v-deal-box"><div><label>商談フェーズ</label><select class="v-phase"></select></div>' +
+        '<div><label>確度</label><select class="v-kakudo"></select></div></div>' +
+        '<label>報告(話した内容・先方の反応・次の約束)</label><textarea class="v-memo"></textarea>' +
+        (hasNext ? '<label>次回連絡日(また連絡するとき)</label><input type="date" class="v-next">' : '') +
+        '<div class="chub-btns"><button type="button" class="v-cancel">キャンセル</button><button type="button" class="primary v-save">保存</button></div>';
+      bg.appendChild(m);
+      document.body.appendChild(bg);
+      var $ = function (c) { return m.querySelector(c); };
+      if (hasNext && fv(r, '次回連絡日', '')) $('.v-next').value = fv(r, '次回連絡日', '');
+
+      var dealSel = $('.v-deal');
+      dealSel.appendChild(el('option', { value: '' }, '(案件なし)'));
+      open.forEach(function (d) {
+        dealSel.appendChild(el('option', { value: d.$id.value }, esc((fv(d, '提案商品', '') || '商品未選択') + ' / ' + (fv(d, '商談フェーズ', '') || 'フェーズ未入力') + '(案件No.' + d.$id.value + ')')));
+      });
+      function dealOf(id) { return data.deals.filter(function (d) { return d.$id.value === String(id); })[0] || null; }
+      function fill(sel, code, fallback, cur) {
+        sel.innerHTML = '';
+        sel.appendChild(el('option', { value: '' }, '(未選択)'));
+        optionsOf(props, code, fallback).forEach(function (v) { var o = el('option', { value: v }, esc(v)); if (v === cur) o.selected = true; sel.appendChild(o); });
+      }
+      function loadDeal() {
+        var d = dealOf(dealSel.value);
+        $('.v-deal-box').style.display = d ? '' : 'none';
+        fill($('.v-phase'), '商談フェーズ', ['商談予定', '提案中', '内示', '受注', '失注', '保留/中止'], d ? fv(d, '商談フェーズ', '') : '');
+        fill($('.v-kakudo'), '確度', ['100%', '80%', '60%', '40%', '20%'], d ? fv(d, '確度', '') : '');
+      }
+      function setDeal(id) {
+        // 終了した案件の予定などで候補に無いときは、案件の欄を足して選べるようにする
+        if (id && !dealSel.querySelector('option[value="' + id + '"]') && dealOf(id)) {
+          dealSel.appendChild(el('option', { value: String(id) }, esc((fv(dealOf(id), '提案商品', '') || '商品未選択') + ' / ' + fv(dealOf(id), '商談フェーズ', '') + '(案件No.' + id + ')')));
+        }
+        dealSel.value = id && dealSel.querySelector('option[value="' + id + '"]') ? String(id) : (open.length === 1 ? open[0].$id.value : '');
+        loadDeal();
+      }
+      dealSel.addEventListener('change', loadDeal);
+
+      var planSel = $('.v-plan');
+      function planOf(id) { return plans.filter(function (p) { return p.$id.value === id; })[0] || null; }
+      if (planSel) {
+        plans.forEach(function (p) {
+          planSel.appendChild(el('option', { value: p.$id.value }, esc(dtLabel(fv(p, '開始日時', '')) + ' ' + fv(p, '件名', ''))));
+        });
+        planSel.appendChild(el('option', { value: '' }, '予定とは別の訪問(突発)'));
+        var onPlan = function () {
+          var p = planOf(planSel.value);
+          $('.v-plan-note').textContent = p ? 'この予定の訪問として記録し、予定を「完了」にします(スケジュールの「✅ 訪問完了」と同じです)。' : '予定とは別の訪問として記録します。予定はそのまま残ります。';
+          setDeal(p ? fv(p, '案件No', '') : '');
+        };
+        planSel.addEventListener('change', onPlan);
+        onPlan();
+      } else {
+        setDeal('');
+      }
+
+      function close() { if (bg.parentNode) document.body.removeChild(bg); }
+      $('.v-cancel').addEventListener('click', close);
+      $('.v-save').addEventListener('click', function () {
+        var memo = $('.v-memo').value.trim();
+        if (!memo) { alert('報告を書いてください(一言でもかまいません)'); return; }
+        var btn = this;
+        btn.disabled = true;
+        var plan = planSel ? planOf(planSel.value) : null;
+        var deal = dealOf(dealSel.value);
+        var msgs = [];
+        var upd = {};
+        if (deal && $('.v-phase').value && $('.v-phase').value !== fv(deal, '商談フェーズ', '')) upd.商談フェーズ = { value: $('.v-phase').value };
+        if (deal && $('.v-kakudo').value && $('.v-kakudo').value !== fv(deal, '確度', '')) upd.確度 = { value: $('.v-kakudo').value };
+        var next = hasNext ? $('.v-next').value : '';
+        var actId = null;
+        (Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: deal.$id.value, record: upd }).then(function () {
+          msgs.push('案件の' + Object.keys(upd).join('・') + 'を更新しました。');
+        }) : kintone.Promise.resolve()).then(function () {
+          // 対応種別: この会社で初めての商談なら「商談（初回）」(スケジュールの訪問完了と同じ決め方)
+          return api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id'],
+            query: '顧客No = "' + custNo + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") limit 1' });
+        }).then(function (resp) {
+          var body = plan ? fv(plan, '内容', '').replace(/\(案件管理の次回商談日から自動作成\)/g, '').trim() : '';
+          var act = {
+            タイトル: { value: '訪問: ' + company }, 対応日付: { value: today },
+            対応者: { value: [{ code: me.code }] }, 対応種別: { value: resp.records.length ? '商談（2回目以降）' : '商談（初回）' },
+            内容: { value: memo + (body ? '\n\n【予定のメモ】' + body : '') + (plan ? '\n\n(スケジュールNo.' + plan.$id.value + ' から作成)' : '') },
+            会社名: { value: company }
+          };
+          if (deal) act.案件No = { value: String(deal.$id.value) };
+          return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act });
+        }).then(function (resp) {
+          actId = resp.id;
+          msgs.push('活動履歴に記録しました。');
+          if (!plan) return null;
+          return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: plan.$id.value, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(actId) } } })
+            .then(function () {
+              msgs.push('今日の予定(' + dtLabel(fv(plan, '開始日時', '')) + ')を完了にしました。');
+              return syncDealNext(fv(plan, '案件No', ''));
+            });
+        }).then(function () {
+          if (!hasNext || next === fv(r, '次回連絡日', '')) return null;
+          return api('/k/v1/record', 'PUT', { app: CUSTOMER_APP_ID, id: custNo, record: { 次回連絡日: { value: next || null } } });
+        }).then(function () {
+          close();
+          alert('記録しました。\n' + msgs.join('\n'));
+          location.reload();
+        }).catch(function (err) {
+          btn.disabled = false;
+          alert('記録できませんでした。' + (msgs.length ? '\n(ここまでは済んでいます: ' + msgs.join(' ') + ')' : '') + (err && err.message ? '\n' + err.message : ''));
+        });
+      });
+    }
   }
 
   // ---------- 💼 案件を作る・進める ----------

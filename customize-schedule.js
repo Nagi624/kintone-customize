@@ -1343,7 +1343,7 @@
 
     if (fv(r, '種類', '') === '訪問' || fv(r, '種類', '') === '外出') {
       var actNo = fv(r, '活動履歴No', '');
-      var ab = el('button', { className: 'primary' }, actNo ? '活動履歴を開く' : '訪問完了 → 活動履歴を作成');
+      var ab = el('button', { className: 'primary' }, actNo ? '活動履歴を開く' : '✅ 訪問完了(報告を書く)');
       ab.addEventListener('click', function () {
         if (actNo) { location.href = IS_MOBILE ? '/k/m/' + ACTIVITY_APP_ID + '/show?record=' + actNo : '/k/' + ACTIVITY_APP_ID + '/show#record=' + actNo; return; }
         createActivity(id, r);
@@ -1401,52 +1401,82 @@
       .catch(function (err) { alert('回答を保存できませんでした。' + (err && err.message ? '\n' + err.message : '')); });
   }
 
-  // 訪問の予定から活動履歴(app17)を作り、予定を「完了」にして、活動履歴の編集画面を開く
+  // 訪問の予定を「完了」にして、活動履歴(app17)に報告を1件残す(2026-10-17: 活動履歴は確認用になったので、報告はこの小窓で書く)
+  // 同じ日にこの会社の訪問を「🚶 訪問を記録」で記録済みなら、新しく作らずその記録を予定に紐付ける(同じ訪問を2件にしない)
   function createActivity(id, r) {
     var dealNo = fv(r, '案件No', '');
-    var ask = dealNo ? askDealUpdate(dealNo) : kintone.Promise.resolve(
-      confirm('この予定を「完了」にして、活動履歴を作成します。よろしいですか？\n(作成後、活動履歴の画面で報告内容を書いてください)') ? {} : null);
-    ask.then(function (choice) {
-      if (!choice) return;
-      var upd = {};
-      if (choice.phase) upd.商談フェーズ = { value: choice.phase };
-      if (choice.kakudo) upd.確度 = { value: choice.kakudo };
-      var p = Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: dealNo, record: upd }) : kintone.Promise.resolve();
-      p.then(function () { doCreateActivity(id, r); }).catch(function (err) {
-        alert('案件の更新に失敗しました。' + (err && err.message ? '\n' + err.message : ''));
+    var custNo = fv(r, '顧客No', '');
+    var day = ymd(new Date(fv(r, '開始日時', '')));
+    var me = kintone.getLoginUser();
+    // 予定に紐付いていない、同じ日・同じ会社・自分の訪問記録(顧客のある予定だけ探せる)
+    var findP = custNo ? kintone.Promise.all([
+      api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id', '内容'],
+        query: '顧客No = "' + custNo + '" and 対応日付 = "' + day + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") and 対応者 in ("' + me.code + '") order by $id desc limit 10' }),
+      api('/k/v1/records', 'GET', { app: APP_ID, fields: ['活動履歴No'],
+        query: '顧客No = "' + custNo + '" and 活動履歴No > 0 and 開始日時 >= "' + day + 'T00:00:00+09:00" and 開始日時 <= "' + day + 'T23:59:59+09:00" limit 50' })
+    ]).then(function (res) {
+      var used = res[1].records.map(function (x) { return String(fv(x, '活動履歴No', '')); });
+      return res[0].records.filter(function (a) {
+        return used.indexOf(String(a.$id.value)) < 0 && !/スケジュールNo\.\d+ から作成/.test(fv(a, '内容', ''));
+      })[0] || null;
+    }).catch(function () { return null; }) : kintone.Promise.resolve(null);
+
+    findP.then(function (found) {
+      if (found && confirm('この会社のこの日の訪問は、すでに「🚶 訪問を記録」で記録されています(活動履歴No.' + found.$id.value + ')。\n新しく作らず、その記録をこの予定の報告にして「完了」にしますか？\n(キャンセルで、報告を書いて新しく記録します)')) {
+        return api('/k/v1/record', 'PUT', { app: APP_ID, id: id, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(found.$id.value) } } })
+          .then(function () { return syncDeals([dealNo]).catch(function () { return null; }); })
+          .then(function () { alert('予定を完了にして、活動履歴No.' + found.$id.value + 'と紐付けました。'); location.reload(); });
+      }
+      return askVisitReport(r, dealNo).then(function (choice) {
+        if (!choice) return null;
+        var upd = {};
+        if (choice.phase) upd.商談フェーズ = { value: choice.phase };
+        if (choice.kakudo) upd.確度 = { value: choice.kakudo };
+        var p = Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: dealNo, record: upd }) : kintone.Promise.resolve();
+        return p.then(function () { return doCreateActivity(id, r, choice.memo); });
       });
+    }).catch(function (err) {
+      alert('記録できませんでした。' + (err && err.message ? '\n' + err.message : ''));
     });
   }
 
-  // 案件の商談フェーズ・確度を選ぶ画面。OKなら {phase, kakudo}、キャンセルなら null
-  function askDealUpdate(dealNo) {
-    return kintone.Promise.all([
+  // 報告(話した内容)と、案件があれば商談フェーズ・確度を聞く画面。OKなら {memo, phase, kakudo}、キャンセルなら null
+  function askVisitReport(r, dealNo) {
+    var dealP = dealNo ? kintone.Promise.all([
       api('/k/v1/record', 'GET', { app: DEAL_APP_ID, id: dealNo }),
       api('/k/v1/app/form/fields', 'GET', { app: DEAL_APP_ID })
-    ]).then(function (res) {
-      var deal = res[0].record;
-      var props = res[1].properties;
+    ]).catch(function () { return null; }) : kintone.Promise.resolve(null);
+    return dealP.then(function (res) {
+      var deal = res ? res[0].record : null;
+      var props = res ? res[1].properties : {};
       function optionsOf(code) {
         var o = props[code] && props[code].options ? props[code].options : {};
         return Object.keys(o).sort(function (a, b) { return o[a].index - o[b].index; });
       }
       return new kintone.Promise(function (resolve) {
         var bg = el('div', { className: 'sched-modal-bg' });
-        var m = el('div', { className: 'sched-modal', style: 'max-width:420px' });
-        m.appendChild(el('h3', {}, '訪問完了 → 活動履歴を作成'));
-        m.appendChild(el('div', {}, '案件「' + (fv(deal, '案件名', '') || fv(deal, '会社名', '')) + '」(案件No.' + dealNo + ')の状況も更新できます。'));
-        function sel(code, label) {
-          m.appendChild(el('label', {}, label));
-          var s = el('select');
-          optionsOf(code).forEach(function (v) { var o = el('option', { value: v }, v); if (v === fv(deal, code, '')) o.selected = true; s.appendChild(o); });
-          m.appendChild(s);
-          return s;
+        var m = el('div', { className: 'sched-modal', style: 'max-width:440px' });
+        m.appendChild(el('h3', {}, (fv(r, '種類', '') === '外出' ? '外出完了' : '訪問完了') + ' → 活動履歴に記録'));
+        m.appendChild(el('div', { style: 'color:#64748b;font-size:12px' }, (companyOf(r) || fv(r, '件名', '')) + ' ・ ' + hm(new Date(fv(r, '開始日時', ''))) + ' ・ ' + kintone.getLoginUser().name));
+        m.appendChild(el('label', {}, '報告(話した内容・先方の反応・次の約束)'));
+        var memo = el('textarea', { style: 'width:100%;min-height:90px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px;font-family:inherit' });
+        m.appendChild(memo);
+        var phase = null, kakudo = null;
+        if (deal) {
+          m.appendChild(el('div', { style: 'margin-top:10px;color:#475569;font-size:13px' }, '案件「' + (fv(deal, '案件名', '') || fv(deal, '会社名', '')) + '」(案件No.' + dealNo + ')の状況'));
+          var sel = function (code) {
+            m.appendChild(el('label', {}, code));
+            var s = el('select');
+            optionsOf(code).forEach(function (v) { var o = el('option', { value: v }, v); if (v === fv(deal, code, '')) o.selected = true; s.appendChild(o); });
+            m.appendChild(s);
+            return s;
+          };
+          phase = sel('商談フェーズ');
+          kakudo = sel('確度');
         }
-        var phase = sel('商談フェーズ', '商談フェーズ');
-        var kakudo = sel('確度', '確度');
         var btns = el('div', { className: 'btns' });
         var cancel = el('button', {}, 'キャンセル');
-        var ok = el('button', { className: 'primary' }, '完了にして活動履歴を作成');
+        var ok = el('button', { className: 'primary' }, '完了にして記録');
         btns.appendChild(cancel);
         btns.appendChild(ok);
         m.appendChild(btns);
@@ -1455,24 +1485,29 @@
         function close(v) { document.body.removeChild(bg); resolve(v); }
         cancel.addEventListener('click', function () { close(null); });
         ok.addEventListener('click', function () {
-          close({ phase: phase.value !== fv(deal, '商談フェーズ', '') ? phase.value : '', kakudo: kakudo.value !== fv(deal, '確度', '') ? kakudo.value : '' });
+          if (!memo.value.trim()) { alert('報告を書いてください(一言でもかまいません)'); return; }
+          close({
+            memo: memo.value.trim(),
+            phase: phase && phase.value !== fv(deal, '商談フェーズ', '') ? phase.value : '',
+            kakudo: kakudo && kakudo.value !== fv(deal, '確度', '') ? kakudo.value : ''
+          });
         });
       });
     });
   }
 
-  function doCreateActivity(id, r) {
+  function doCreateActivity(id, r, memo) {
     var me = kintone.getLoginUser();
     var custNo = fv(r, '顧客No', '');
     var kindP;
-    if (fv(r, '種類', '') !== '訪問' || !custNo) kindP = kintone.Promise.resolve('その他');
+    if (fv(r, '種類', '') !== '訪問' || !custNo) kindP = kintone.Promise.resolve(fv(r, '種類', '') === '訪問' ? '商談（初回）' : 'その他');
     else {
       kindP = api('/k/v1/records', 'GET', {
         app: ACTIVITY_APP_ID, fields: ['$id'],
         query: '顧客No = "' + custNo + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") limit 1'
       }).then(function (resp) { return resp.records.length ? '商談（2回目以降）' : '商談（初回）'; });
     }
-    kindP.then(function (kind) {
+    return kindP.then(function (kind) {
       // 予定の内容のうち、自動で入れた裏方の文言は報告に写さない
       var body = fv(r, '内容', '').replace(/\(案件管理の次回商談日から自動作成\)/g, '').trim();
       // 件名は「種類: 会社名」の短い形にする(予定の件名は「商談: 会社名 / 案件名」のように長いことがあるため)
@@ -1483,7 +1518,7 @@
         対応者: { value: [{ code: me.code }] },
         対応種別: { value: kind },
         内容: { value: (!fv(r, '会社名', '') && fv(r, 'ネタ会社名', '') ? '訪問先: ' + fv(r, 'ネタ会社名', '') + '(ネタNo.' + fv(r, 'ネタNo', '') + '、顧客未登録)\n' : '') +
-          (body ? body + '\n\n' : '') + '(スケジュールNo.' + id + ' から作成)' }
+          memo + (body ? '\n\n【予定のメモ】' + body : '') + '\n\n(スケジュールNo.' + id + ' から作成)' }
       };
       if (fv(r, '会社名', '')) rec.会社名 = { value: fv(r, '会社名', '') };
       if (fv(r, '案件No', '')) rec.案件No = { value: fv(r, '案件No', '') };
@@ -1494,9 +1529,8 @@
         .then(function () { return syncDeals([fv(r, '案件No', '')]).catch(function () { return null; }); })
         .then(function () { return actId; });
     }).then(function (actId) {
-      location.href = IS_MOBILE ? '/k/m/' + ACTIVITY_APP_ID + '/show?record=' + actId : '/k/' + ACTIVITY_APP_ID + '/show#record=' + actId + '&mode=edit';
-    }).catch(function (err) {
-      alert('活動履歴を作成できませんでした。' + (err && err.message ? '\n' + err.message : ''));
+      alert('予定を完了にして、活動履歴に記録しました(No.' + actId + ')。');
+      location.reload();
     });
   }
 

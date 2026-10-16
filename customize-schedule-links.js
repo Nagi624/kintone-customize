@@ -9,8 +9,10 @@
  *   参加者=商談担当者(空なら主担当)。案件側のリマインダー通知は廃止し、スケジュールのリマインダーに一本化した。
  * - 案件の詳細画面で、次回商談日とスケジュールの「この案件の次の予定」が食い違っていたら赤い警告と直すボタンを出す。
  * - 案件管理: 「📄 見積書を作成」で、案件No.を取得した状態の見積書の作成画面を開く(受け取りは customize-quote-number.js)。
- * - ネタリスト: 「📞 架電を記録」「🚶 飛び込みを記録」で、結果・メモ・次回架電予定日だけの小さな画面から架電履歴に1行足して保存する
+ * - ネタリスト: 「📞 架電を記録」「🚶 訪問を記録」で、結果・メモ・次回架電予定日だけの小さな画面から架電履歴に1行足して保存する
  *   (2026-10-11: 電話/飛び込みの区別と時刻も残す。毎朝の架電・飛び込みリストの点数とおすすめ時間帯の学習に使う)
+ *   (2026-10-17: ボタン名を「飛び込みを記録」→「訪問を記録」。今日の自分の訪問予定がこのネタにあれば、架電履歴には足さず
+ *    予定を完了にして活動履歴に1件残す=スケジュールの訪問完了と同じ。同じ訪問を予定と飛び込みの両方に数えないため)
  *   (日付=今日・担当=自分。獲得ならアポ獲得者が空のとき自分を入れ、続けてアポをスケジュールに登録するか聞く)。
  * - 案件管理の「コール業務」は入力できなくする(2026-10-16 使用終了。電話の結果は顧客管理の作業パネルから活動履歴へ)。
  */
@@ -21,6 +23,7 @@
   var DEAL_APP_ID = 19;
   var LEAD_APP_ID = 29;
   var QUOTE_APP_ID = 16;
+  var ACTIVITY_APP_ID = 17;
   var PREFILL_KEY = 'sched-prefill-34';
   var BUTTON_ID = 'schedule-link-button';
 
@@ -221,14 +224,54 @@
     return pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-  // kind: '電話' または '飛び込み'
+  // 今日の自分の訪問予定(まだ「予定」のもの)で、このネタが訪問先のもの。見られない人は無しとして扱う
+  function todayPlansOfLead(leadId) {
+    var t = new Date(), tm = new Date();
+    tm.setDate(tm.getDate() + 1);
+    var d = function (x) { return x.getFullYear() + '-' + pad(x.getMonth() + 1) + '-' + pad(x.getDate()); };
+    return api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '内容'],
+      query: 'ネタNo = "' + leadId + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
+        '開始日時 >= "' + d(t) + 'T00:00:00+09:00" and 開始日時 < "' + d(tm) + 'T00:00:00+09:00" order by 開始日時 asc limit 1' })
+      .then(function (resp) { return resp.records[0] || null; }).catch(function () { return null; });
+  }
+
+  // 予定のある訪問: スケジュールの「✅ 訪問完了」と同じく、活動履歴に1件残して予定を完了にする(架電履歴には足さない。
+  // 足すと日報の訪問件数で予定と飛び込みの両方に数えられ、飛び込みリストの学習にもアポの訪問が混ざるため)
+  function recordPlannedVisit(r, plan, chosen, memo, next) {
+    var me = kintone.getLoginUser();
+    var id = fv(r, 'レコード番号', '') || fv(r, '$id', '');
+    var body = fv(plan, '内容', '').replace(/\(案件管理の次回商談日から自動作成\)/g, '').trim();
+    var act = {
+      タイトル: { value: '訪問: ' + fv(r, '会社名', '') }, 対応日付: { value: todayYmd() },
+      対応者: { value: [{ code: me.code }] }, 対応種別: { value: '商談（初回）' },
+      内容: { value: '訪問先: ' + fv(r, '会社名', '') + '(ネタNo.' + id + '、顧客未登録)\n結果: ' + chosen + (memo ? '\n' + memo : '') +
+        (body ? '\n\n【予定のメモ】' + body : '') + '\n\n(スケジュールNo.' + plan.$id.value + ' から作成)' }
+    };
+    return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act }).then(function (resp) {
+      return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: plan.$id.value, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(resp.id) } } });
+    }).then(function () {
+      var upd = { 次回架電予定日: { value: next || null } };
+      if (chosen === '獲得' && !fv(r, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
+      return api('/k/v1/record', 'PUT', { app: LEAD_APP_ID, id: id, record: upd });
+    });
+  }
+
+  // kind: '電話' または '飛び込み'(ボタン名は「🚶 訪問を記録」。架電履歴の種別の値は学習・日報で使うので「飛び込み」のまま)
   function openCallDialog(r, kind) {
     kind = kind || '電話';
+    if (kind !== '飛び込み') return showCallDialog(r, kind, null);
+    todayPlansOfLead(fv(r, 'レコード番号', '') || fv(r, '$id', '')).then(function (plan) { showCallDialog(r, kind, plan); });
+  }
+
+  function showCallDialog(r, kind, plan) {
     var bg = document.createElement('div');
     bg.style.cssText = 'position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px';
     var m = document.createElement('div');
     m.style.cssText = 'background:#fff;border-radius:8px;padding:16px;width:100%;max-width:420px;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)';
-    m.innerHTML = '<div style="font-size:16px;font-weight:bold;margin-bottom:10px">' + (kind === '飛び込み' ? '🚶 飛び込みを記録' : '📞 架電を記録') + '</div>' +
+    m.innerHTML = '<div style="font-size:16px;font-weight:bold;margin-bottom:10px">' + (kind === '飛び込み' ? '🚶 訪問を記録' : '📞 架電を記録') + '</div>' +
+      (plan ? '<div style="margin-bottom:10px;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;border-radius:6px;font-size:13px">📅 今日 ' +
+        pad(new Date(fv(plan, '開始日時', '')).getHours()) + ':' + pad(new Date(fv(plan, '開始日時', '')).getMinutes()) +
+        ' の訪問予定の訪問として記録し、予定を「完了」にします(スケジュールの「✅ 訪問完了」と同じ。活動履歴に残ります)。</div>' : '') +
       '<div style="color:#475569;margin-bottom:6px">結果</div><div class="call-results" style="display:flex;flex-wrap:wrap;gap:6px"></div>' +
       '<div style="color:#475569;margin:12px 0 6px">メモ</div><input class="call-memo" type="text" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box">' +
       '<div style="color:#475569;margin:12px 0 6px">次回架電予定日(また連絡するとき)</div><input class="call-next" type="date" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px">' +
@@ -262,7 +305,7 @@
       var id = fv(r, 'レコード番号', '') || fv(r, '$id', '');
       var me = kintone.getLoginUser();
       this.disabled = true;
-      api('/k/v1/record', 'GET', { app: LEAD_APP_ID, id: id }).then(function (resp) {
+      (plan ? recordPlannedVisit(r, plan, chosen, memo, next) : api('/k/v1/record', 'GET', { app: LEAD_APP_ID, id: id }).then(function (resp) {
         var cur = resp.record;
         // 何も入っていない行(新規作成時の初期値だけの行など)は除いて、新しい行を足す
         var rows = fv(cur, '架電履歴', []).filter(function (row) {
@@ -275,9 +318,10 @@
         var upd = { 架電履歴: { value: rows }, 次回架電予定日: { value: next || null } };
         if (chosen === '獲得' && !fv(cur, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
         return api('/k/v1/record', 'PUT', { app: LEAD_APP_ID, id: id, record: upd });
-      }).then(function () {
+      })).then(function () {
         close();
-        if (chosen === '獲得' && confirm('アポ獲得として記録しました。続けて、アポをスケジュールに登録しますか？')) {
+        if (plan) alert('予定を完了にして、活動履歴に記録しました。');
+        if (chosen === '獲得' && !plan && confirm('アポ獲得として記録しました。続けて、アポをスケジュールに登録しますか？')) {
           openScheduleCreate(leadPrefill(r));
           return;
         }
@@ -322,7 +366,7 @@
       }));
     } else {
       wrap.appendChild(makeButton('📞 架電を記録', true, function () { openCallDialog(r, '電話'); }));
-      wrap.appendChild(makeButton('🚶 飛び込みを記録', true, function () { openCallDialog(r, '飛び込み'); }));
+      wrap.appendChild(makeButton('🚶 訪問を記録', true, function () { openCallDialog(r, '飛び込み'); }));
       wrap.appendChild(makeButton('📅 アポを予定に登録', false, function () { openScheduleCreate(leadPrefill(r)); }));
     }
     space.appendChild(wrap);

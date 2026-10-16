@@ -1,5 +1,6 @@
 /*
- * 🧭 アシスト  顧客管理18・案件管理19・活動履歴17・ネタリスト29  PC/スマホ両対応(2026-10-16)
+ * 🧭 アシスト  顧客管理18・案件管理19・ネタリスト29  PC/スマホ両対応(2026-10-16)
+ * (活動履歴17は2026-10-17に確認用(直接入力しない)にしたので対象から外した)
  *
  * アプリの使い方に慣れていない人向けに、レコードの画面右下に小窓を出して
  *   ⚠ 足りない情報(空だと困る欄と、その理由)
@@ -17,7 +18,7 @@
 
   var SETTINGS_APP_ID = 43;
   var APP = { activity: 17, customer: 18, deal: 19, lead: 29, contact: 20, quote: 16, billing: 21, schedule: 34 };
-  var TARGETS = [APP.activity, APP.customer, APP.deal, APP.lead];
+  var TARGETS = [APP.customer, APP.deal, APP.lead];
   var BOX_ID = 'assist-box';
   var CACHE_KEY = 'assist-setting';
   var FOLD_KEY = 'assist-folded';
@@ -76,7 +77,7 @@
         count(APP.contact, '顧客No_ = "' + id + '"')
       ]).then(function (res) {
         var last = res[0], open = res[1], contacts = res[2], next = [];
-        if (!last) next.push('やりとりの記録がまだありません。電話したら上の「📞 電話を記録」で残しましょう');
+        if (!last) next.push('やりとりの記録がまだありません。電話したら上の「📞 電話を記録」、訪問したら「🚶 訪問を記録」で残しましょう');
         if (open) {
           open.forEach(function (d) {
             if (!fv(d, '次回商談日', '')) next.push('案件「' + esc(fv(d, '提案商品', '') || 'No.' + d.$id.value) + '」の次回商談日が未定です。「💼 案件を作る・進める」で入れるとスケジュールにも入ります');
@@ -107,7 +108,7 @@
       if (ph && !fv(r, 'アポ獲得者', []).length) miss.push('<b>アポ獲得者</b> — アポを取った人(グラフ・営業道場の段位に使います)');
       if (ph === '受注' && !fv(r, '契約書_申込書', []).length) miss.push('<b>契約書/申込書</b>の添付');
       if (mode === 'detail') {
-        if (active && nx && new Date(nx) < new Date()) next.push('次回商談日(' + md(nx) + ')を過ぎています。終わったらスケジュールの予定で「訪問完了 → 活動履歴を作成」、延期なら日時を直しましょう');
+        if (active && nx && new Date(nx) < new Date()) next.push('次回商談日(' + md(nx) + ')を過ぎています。終わったらスケジュールの予定の「✅ 訪問完了」(顧客管理の「🚶 訪問を記録」でも同じ)、延期なら日時を直しましょう');
         if (ph === '内示') next.push('受注が決まったら商談フェーズを「受注」にして、売上を確定の金額に直しましょう');
         if (ph === '失注' && !fv(r, '詳細', '')) next.push('断られた理由を「詳細」に残しておくと、次の営業に活かせます');
       }
@@ -123,27 +124,9 @@
         var next = [];
         if (res[0] === 0) next.push('見積書がまだありません。上の「📄 見積書を作成」から作ると案件が入った状態で始められます');
         if (res[1] === 0) next.push('請求・入金管理にまだ登録がありません。経理に請求の登録を依頼しましょう(見積書番号から作れます)');
-        if (res[2] === 0 && ph === '提案中') next.push('この案件の活動履歴がありません。商談の内容を残しておきましょう(予定の「訪問完了 → 活動履歴を作成」が簡単です)');
+        if (res[2] === 0 && ph === '提案中') next.push('この案件の活動履歴がありません。商談の内容を残しておきましょう(予定の「✅ 訪問完了」か、顧客管理の「🚶 訪問を記録」)');
         return { miss: [], next: next };
       });
-    }
-  };
-
-  rules[APP.activity] = {
-    sync: function (r, mode) {
-      var miss = [], next = [];
-      var kind = fv(r, '対応種別', ''), call = fv(r, 'コール業務', '');
-      if (!fv(r, '会社名', '')) miss.push('<b>会社名</b> — 「取得」で顧客を選ぶと、顧客の画面に履歴が出ます');
-      if (!fv(r, '対応日付', '')) miss.push('<b>対応日付</b> — 営業日報の自動取り込みに使います');
-      if (!fv(r, '対応者', []).length) miss.push('<b>対応者</b> — 営業日報の自動取り込みに使います');
-      if (!kind) miss.push('<b>対応種別</b>(電話/メール/商談 など)');
-      if (kind === '電話' && r['コール業務'] && !call) miss.push('<b>コール業務</b>(電話の結果) — 日報のアポ件数などに使います');
-      if (!fv(r, '内容', '')) miss.push('<b>内容</b> — 話したこと・次の約束を書いておきましょう');
-      if (kind.indexOf('商談') === 0 && !fv(r, '案件No', '')) miss.push('<b>案件No.</b> — 商談の記録は案件に紐付けてください');
-      if (call === 'アポ獲得' && !fv(r, '案件No', '')) next.push('アポ獲得なのに案件が紐付いていません。顧客管理の「📞 電話を記録」でアポ獲得を選ぶと、案件と予定が自動で作られます');
-      if (mode === 'detail' && kind.indexOf('商談') === 0 && fv(r, '案件No', '')) next.push('案件(No.' + esc(fv(r, '案件No', '')) + ')の商談フェーズ・確度・次回商談日も更新しましょう');
-      if (mode === 'edit' && kind === '電話') next.push('電話の記録は、顧客管理の会社の画面の「📞 電話を記録」からだと、ここを開かずに済みます');
-      return { miss: miss, next: next };
     }
   };
 
@@ -159,7 +142,7 @@
       var last = rows.length ? fv(rows[rows.length - 1].value, '履歴結果', '') : '';
       var nc = fv(r, '次回架電予定日', '');
       if (mode === 'detail') {
-        if (!rows.length) next.push('電話・飛び込みをしたら、上の「📞 架電を記録」「🚶 飛び込みを記録」で残しましょう');
+        if (!rows.length) next.push('電話・飛び込みをしたら、上の「📞 架電を記録」「🚶 訪問を記録」で残しましょう');
         if (last === '獲得') next.push('アポ獲得です。「📅 アポを予定に登録」のあと「顧客管理へ登録」で顧客と履歴を移しましょう');
         if (['ネタ', '不通・不在', '架電済み'].indexOf(last) >= 0 && !nc) next.push('前回は「' + esc(last) + '」でした。次回架電予定日を入れると、その日の架電リストで優先されます');
         if (nc && nc <= today() && last !== '獲得' && last !== '失注') next.push('かけ直しの日(' + md(nc) + ')になりました');

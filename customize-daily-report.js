@@ -6,6 +6,8 @@
  * 1. 活動履歴(app17): 対応者=報告者 かつ 対応日付=日付
  *    対応種別 電話→架電 / 商談(初回・2回目以降)→訪問 / それ以外→その他
  *    (電話でコール業務=アポ獲得のときはアポ獲得。顧客管理の「📞 電話を記録」で入る、2026-10-16)
+ *    予定の無い商談(顧客管理の「🚶 訪問を記録」、2026-10-17〜)は訪問件数にも数える(作成時刻で午前/午後)。
+ *    予定から作った記録([スケジュールNo.X から作成])・予定の活動履歴Noに紐付いた記録は予定の側で数える
  * 2. 案件管理(app19): 作成者 or 更新者=報告者 かつ 更新日時がその日
  *    商談フェーズ 受注→受注(金額=売上) / その日新規登録→見込み / それ以外→その他
  *    受注は、別の日報で同じ案件の受注を報告済みなら「その他」にして二重計上しない
@@ -39,6 +41,8 @@
   var TABLE = '活動明細';
   var BUTTON_ID = 'daily-report-import-button';
   var NEW_LEAD_DETAIL_LIMIT = 5;
+  // 活動履歴を確認用にした日(2026-10-17)。これより前は活動履歴に手入力の商談があり、予定と二重に数えてしまうため数えない
+  var VISIT_COUNT_FROM = '2026-10-17';
 
   // PC/スマホでレコード操作APIが違うため、イベントの種類から判定して切り替える
   var IS_MOBILE = false;
@@ -138,9 +142,14 @@
         var body = fv(a, '内容', '');
         if (body) memo += (memo ? '：' : '') + body;
         var fromSched = body.match(/スケジュールNo\.(\d+) から作成/);
+        // 予定の無い訪問(顧客管理の「🚶 訪問を記録」)は、作成した時刻で午前/午後の訪問件数に数える。
+        // 予定から作った記録・予定に紐付けた記録は予定の側で数えるので除く(importAll で紐付けを見て外す)
+        var created = new Date(fv(a, '作成日時', ''));
+        var visitAt = t.indexOf('商談') === 0 && !fromSched && date >= VISIT_COUNT_FROM ? (created.getHours() < 12 ? '午前' : '午後') : null;
         return {
           mark: '[履歴No.' + a.$id.value + ']',
           alt: fromSched ? '[予定No.' + fromSched[1] + ']' : null,
+          actId: String(a.$id.value), visitAt: visitAt,
           call: t === '電話',
           row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''),
             memo: '[履歴No.' + a.$id.value + '] 活動履歴(' + t + ') ' + shorten(memo, 180) }
@@ -254,13 +263,14 @@
     var tomorrow = nextBusinessDay(date);
     var tq = dayRangeQuery(codes, tomorrow) + ' order by 開始日時 asc';
     return Promise.all([getAll(APP.schedule, q), getAll(APP.schedule, tq)]).then(function (res) {
-      var out = { items: [], am: 0, pm: 0, plan: '', ok: true };
+      var out = { items: [], am: 0, pm: 0, plan: '', ok: true, linked: [] };
       res[0].forEach(function (r) {
         var s = new Date(fv(r, '開始日時', ''));
         var time = s.getHours() < 12 ? '午前' : '午後';
         var st = fv(r, '実施状況', '予定');
         var visit = fv(r, '種類', '') === '訪問' && st !== '中止';
         if (visit) { if (time === '午前') out.am++; else out.pm++; }
+        if (fv(r, '活動履歴No', '')) out.linked.push(String(fv(r, '活動履歴No', '')));
         if (fv(r, '活動履歴No', '')) return; // 活動履歴の行で取り込む
         var id = r.$id.value;
         var mark = '[予定No.' + id + ']';
@@ -283,7 +293,7 @@
       return out;
     }).catch(function (e) {
       console.warn('スケジュールを取り込めませんでした', e);
-      return { items: [], am: 0, pm: 0, plan: '', ok: false };
+      return { items: [], am: 0, pm: 0, plan: '', ok: false, linked: [] };
     });
   }
 
@@ -312,8 +322,9 @@
       res.forEach(function (items) {
         items.forEach(function (it) {
           if (it.call) calls++;
-          if (it.walk === '午前') walkAm++;
-          if (it.walk === '午後') walkPm++;
+          var w = it.walk || (it.visitAt && sched.linked.indexOf(it.actId) < 0 ? it.visitAt : null);
+          if (w === '午前') walkAm++;
+          if (w === '午後') walkPm++;
         });
       });
       var latest = recApi().get();
@@ -373,7 +384,7 @@
       window.alert('取り込みました:\n活動履歴 ' + counts[0] + '件 / 案件管理 ' + counts[1] + '件 / ネタリスト ' + counts[2] +
         '件 / スケジュール ' + counts[3] + '件' +
         (merged ? '\n(うち ' + merged + '件は、同じ会社の行にまとめました)' : '') +
-        (visitChanged ? '\n訪問件数を予定・飛び込みから入れました(午前' + (sched.am + walkAm) + '・午後' + (sched.pm + walkPm) + ')' : '') +
+        (visitChanged ? '\n訪問件数を予定・予定外の訪問から入れました(午前' + (sched.am + walkAm) + '・午後' + (sched.pm + walkPm) + ')' : '') +
         (callChanged ? '\n架電件数を入れました(' + calls + '件)' : '') +
         (planAdded ? '\n翌営業日の予定を「明日の目標」に追記しました' : '') +
         (sched.ok ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした') +
