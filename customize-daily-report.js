@@ -10,12 +10,16 @@
  *    受注は、別の日報で同じ案件の受注を報告済みなら「その他」にして二重計上しない
  * 3. ネタリスト(app29):
  *    a. 架電履歴の行のうち 日付=日付 かつ 担当=報告者
- *       結果 獲得→アポ獲得 / ネタ→見込み / それ以外→架電
+ *       結果 獲得→アポ獲得 / ネタ→見込み / それ以外→架電(種別が飛び込みなら訪問)
+ *       飛び込みは訪問件数にも数える(時刻で午前/午後。時刻が空なら午前)
  *    b. その日に報告者が新規登録したネタ(aで出たものを除く)。6件以上なら1行にまとめる
  * 4. スケジュール(app34): 参加者=報告者 かつ 開始がその日 の 訪問・外出
  *    訪問(中止以外)の件数を開始時刻で午前/午後に数え、訪問件数欄に入れる(手入力の方が多ければそのまま)
  *    明細は 訪問→訪問 / 中止・外出→その他。予定から活動履歴を作成済みなら、その活動履歴の行で取り込むので予定の行は作らない
  *    翌営業日(土日を除く)の予定を「明日の目標」に下書きとして追記する(【翌営業日の予定】の見出しがあれば追記しない)
+ *
+ * 架電件数: 活動履歴の対応種別「電話」+ネタリストの種別「電話」(空も電話扱い)の行を、結果に関係なく数えて入れる
+ *   (手入力の方が多ければそのまま)。明細は1社1行にまとめるため、区分「架電」の行数では電話の回数にならない(2026-10-16)
  *
  * 明細で案件No.を選んだとき、会社名が空なら案件管理の会社名を入れる
  * (ルックアップのコピー先にすると会社名を手入力できなくなり、案件の無いネタの行で困るため)
@@ -135,6 +139,7 @@
         return {
           mark: '[履歴No.' + a.$id.value + ']',
           alt: fromSched ? '[予定No.' + fromSched[1] + ']' : null,
+          call: t === '電話',
           row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''),
             memo: '[履歴No.' + a.$id.value + '] 活動履歴(' + t + ') ' + shorten(memo, 180) }
         };
@@ -195,10 +200,16 @@
           if (!mine) return;
           called[l.$id.value] = true;
           var result = fv(v, '履歴結果', '');
-          var kubun = result === '獲得' ? 'アポ獲得' : (result === 'ネタ' ? '見込み' : '架電');
+          var walk = fv(v, '履歴種別', '') === '飛び込み';
+          var kubun = result === '獲得' ? 'アポ獲得' : (result === 'ネタ' ? '見込み' : (walk ? '訪問' : '架電'));
           var mark = '[ネタNo.' + l.$id.value + '-' + r.id + ']';
-          items.push({ mark: mark, row: { kubun: kubun, company: fv(l, '会社名', ''),
-            memo: mark + ' ネタリスト架電 結果:' + (result || '-') + (fv(v, '履歴メモ', '') ? ' ' + shorten(fv(v, '履歴メモ', ''), 120) : '') } });
+          var item = { mark: mark, call: !walk, row: { kubun: kubun, company: fv(l, '会社名', ''),
+            memo: mark + ' ネタリスト' + (walk ? '飛び込み' : '架電') + ' 結果:' + (result || '-') + (fv(v, '履歴メモ', '') ? ' ' + shorten(fv(v, '履歴メモ', ''), 120) : '') } };
+          if (walk) {
+            item.walk = Number((fv(v, '履歴時刻', '') || '00').split(':')[0]) < 12 ? '午前' : '午後';
+            item.row.time = item.walk;
+          }
+          items.push(item);
         });
       });
       var newLeads = res[1].filter(function (l) { return !called[l.$id.value]; });
@@ -294,6 +305,15 @@
     ]).then(function (all) {
       var sched = all[3];
       var res = [all[0], all[1], all[2], sched.items];
+      // 架電件数・飛び込みの訪問は、取り込み済みかに関係なく、その日の全件から数える
+      var calls = 0, walkAm = 0, walkPm = 0;
+      res.forEach(function (items) {
+        items.forEach(function (it) {
+          if (it.call) calls++;
+          if (it.walk === '午前') walkAm++;
+          if (it.walk === '午後') walkPm++;
+        });
+      });
       var latest = recApi().get();
       var rows = fv(latest.record, TABLE, []).filter(function (r) { return !isBlankRow(r); });
       var existing = rows.map(function (r) { return fv(r.value, '内容', ''); }).join('\n');
@@ -324,19 +344,24 @@
         });
       });
       var total = counts[0] + counts[1] + counts[2] + counts[3];
-      // 訪問件数: スケジュールの数が手入力より多いときだけ上書き
+      // 訪問件数(予定+飛び込み)・架電件数: 数えた方が手入力より多いときだけ上書き
       var visitChanged = false;
-      [['訪問_午前', sched.am], ['訪問_午後', sched.pm]].forEach(function (v) {
+      [['訪問_午前', sched.am + walkAm], ['訪問_午後', sched.pm + walkPm]].forEach(function (v) {
         var cur = Number(fv(latest.record, v[0], 0)) || 0;
         if (v[1] > cur) { latest.record[v[0]].value = String(v[1]); visitChanged = true; }
       });
+      var callChanged = false;
+      if (latest.record['架電件数'] && calls > (Number(fv(latest.record, '架電件数', 0)) || 0)) {
+        latest.record['架電件数'].value = String(calls);
+        callChanged = true;
+      }
       var goal = fv(latest.record, '明日の目標', '');
       var planAdded = false;
       if (sched.plan && goal.indexOf('【翌営業日の予定') < 0) {
         latest.record['明日の目標'].value = (goal ? goal + '\n\n' : '') + sched.plan;
         planAdded = true;
       }
-      if (!total && !visitChanged && !planAdded) {
+      if (!total && !visitChanged && !callChanged && !planAdded) {
         window.alert('取り込める新しい情報はありませんでした。\n(活動履歴・案件管理・ネタリスト・スケジュールに、この日・この報告者の入力が無いか、すべて取り込み済みです)' +
           (sched.ok ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした'));
         return;
@@ -346,7 +371,8 @@
       window.alert('取り込みました:\n活動履歴 ' + counts[0] + '件 / 案件管理 ' + counts[1] + '件 / ネタリスト ' + counts[2] +
         '件 / スケジュール ' + counts[3] + '件' +
         (merged ? '\n(うち ' + merged + '件は、同じ会社の行にまとめました)' : '') +
-        (visitChanged ? '\n訪問件数を予定から入れました(午前' + sched.am + '・午後' + sched.pm + ')' : '') +
+        (visitChanged ? '\n訪問件数を予定・飛び込みから入れました(午前' + (sched.am + walkAm) + '・午後' + (sched.pm + walkPm) + ')' : '') +
+        (callChanged ? '\n架電件数を入れました(' + calls + '件)' : '') +
         (planAdded ? '\n翌営業日の予定を「明日の目標」に追記しました' : '') +
         (sched.ok ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした') +
         '\n\n時間帯・区分・金額を確認し、上の「今日の数字」も見直してから保存してください。');
@@ -413,7 +439,7 @@
   // 利用者が列の境目をドラッグして変えた幅は尊重し、150pxのままの列だけを変える。
   var MOBILE_COL_WIDTH = {
     '日付': 88, '報告者': 104,
-    '訪問件数（午前）': 58, '訪問件数（午後）': 58, '訪問件数（合計）': 58, 'アポ件数': 58, '見込み件数': 58, '受注件数': 58,
+    '訪問件数（午前）': 58, '訪問件数（午後）': 58, '訪問件数（合計）': 58, '架電件数': 58, 'アポ件数': 58, '見込み件数': 58, '受注件数': 58,
     '受注金額（合計）': 92, '今日の課題': 180, '明日の目標': 180
   };
   var MOBILE_COL_DEFAULT = 64; // 上に無い列(後から一覧に足した列など)

@@ -9,7 +9,7 @@
  * ④ バッジ: 🔥連続提出(平日。土日は休みでも途切れない。当日未提出なら前日まで)/🏆自己ベスト(過去3件以上あるとき)/🎉初受注
  * ⑤ 👏拍手: その日報のコメント欄に一言を書き込む
  *
- * 件数の数え方: 訪問=訪問件数（合計）、架電=明細の区分「架電」の行数、アポ・見込み=欄の値と明細の行数の大きい方、受注=受注件数
+ * 件数の数え方: 訪問=訪問件数（合計）、架電・アポ・見込み=欄の値と明細の行数の大きい方、受注=受注件数
  * 明細は会社名も内容も空の行(区分の初期値だけの行)を数えない
  *
  * PREVIEW_USERS に人を並べると、その人だけに表示し他の人には「準備中」と出す(null で全員に表示)
@@ -78,7 +78,7 @@
     var rows = realRows(rec);
     return {
       visit: num(fv(rec, '訪問合計', 0)),
-      call: countKind(rows, '架電'),
+      call: Math.max(num(fv(rec, '架電件数', 0)), countKind(rows, '架電')),
       apo: Math.max(num(fv(rec, 'アポ件数', 0)), countKind(rows, 'アポ獲得')),
       lead: Math.max(num(fv(rec, '見込み件数', 0)), countKind(rows, '見込み')),
       order: num(fv(rec, '受注件数', 0)),
@@ -179,7 +179,7 @@
 
   // ---------- データ取得 ----------
   function loadReports() {
-    return getAll(APP_REPORT, '', ['$id', '日付', '報告者', '訪問合計', 'アポ件数', '見込み件数', '受注件数', '受注金額合計', '活動明細'])
+    return getAll(APP_REPORT, '', ['$id', '日付', '報告者', '訪問合計', '架電件数', 'アポ件数', '見込み件数', '受注件数', '受注金額合計', '活動明細'])
       .then(function (recs) { state.reports = recs; });
   }
   function loadGoal(date) {
