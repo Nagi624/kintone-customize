@@ -13,7 +13,7 @@
 
   var LEAD_APP_ID = 29;
   var CUSTOMER_APP_ID = 18;
-  var RESULTS = ['架電済み', '不通・不在', 'ネタ', '獲得', '失注'];
+  var RESULTS = ['架電済み', '不通・不在', 'ネタ', '獲得', '失注', '受付ブロック'];
   var IS_MOBILE = false;
 
   function fv(obj, code, fallback) {

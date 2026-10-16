@@ -41,7 +41,8 @@
     { v: 'コールのみ', hint: '留守電・通話中・つながらない' },
     { v: '担当不在', hint: '担当者が不在・手が離せない' },
     { v: 'ネタ', hint: '話せた(今回はアポなし)' },
-    { v: 'アポ獲得', hint: '商談の約束ができた' }
+    { v: 'アポ獲得', hint: '商談の約束ができた' },
+    { v: '受付ブロック', hint: '受付で断られた・取り付く島もない' }
   ];
   var CLOSED = ['受注', '失注', '保留/中止'];
   var WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
@@ -108,6 +109,7 @@
       '.chub-badge.b-apo{background:#dcfce7;color:#166534}.chub-badge.b-neta{background:#fef9c3;color:#854d0e}',
       '.chub-badge.b-fuzai{background:#e0e7ff;color:#3730a3}.chub-badge.b-call{background:#f1f5f9;color:#475569}',
       '.chub-badge.b-visit{background:#fce7f3;color:#9d174d}',
+      '.chub-badge.b-block{background:#fee2e2;color:#991b1b}',
       '#chub-root.chub-m .chub-grid{grid-template-columns:1fr}',
       '#chub-root.chub-m .chub-card.wide{grid-column:auto}',
       '#chub-root.chub-m .chub-bar button.chub-btn{flex:1 1 100%;padding:12px}',
@@ -144,7 +146,7 @@
     var r = fv(a, 'コール業務', '');
     var kind = fv(a, '対応種別', '');
     if (r) {
-      var cls = r === 'アポ獲得' ? 'b-apo' : r === 'ネタ' ? 'b-neta' : r === '担当不在' ? 'b-fuzai' : 'b-call';
+      var cls = r === 'アポ獲得' ? 'b-apo' : r === 'ネタ' ? 'b-neta' : r === '担当不在' ? 'b-fuzai' : r === '受付ブロック' ? 'b-block' : 'b-call';
       return '<span class="chub-badge ' + cls + '">📞 ' + esc(r) + '</span>';
     }
     if (kind.indexOf('商談') === 0) return '<span class="chub-badge b-visit">🤝 ' + esc(kind) + '</span>';
