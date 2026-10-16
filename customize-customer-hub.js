@@ -19,6 +19,7 @@
  *   ネタリストに同じお店があれば、履歴が無いネタは顧客管理へ移し(ネタは削除)、履歴があるネタはネタリストの「顧客管理へ登録」へ案内。
  *   GoogleのAPIは使わない(取った値は規約で30日を超えて保存できないため。利用者が貼り付けた文字だけを読む)。
  *
+ * 貼り付けの読み取り・重複チェックは customize-maps-paste.js(同じアプリに登録が必要。ネタリストと共用)。
  * 置き場所: フォームのスペース(要素ID customer_hub)。無ければヘッダーの空き(PCはメニュー横・スマホはヘッダー)に出す。
  * 前提の欄: 活動履歴17「コール業務」(ドロップダウン)、顧客管理18「次回連絡日」(日付)・「GoogleマップURL」(リンク)。無い場合はその部分を出さない。
  */
@@ -575,70 +576,15 @@
   // Googleマップで見つけたお店を、顧客登録+電話の記録まで1画面で行う。
   // 読み取りは利用者が貼り付けた文字だけ(GoogleのAPIで取った値は規約で30日を超えて保存できないため、APIは使わない)。
   var LEAD_APP_ID = 29;
-  var PREFS = /^(北海道|東京都|京都府|大阪府|.{2,3}県)/;
-
-  function digits(s) { return String(s || '').normalize('NFKC').replace(/\D/g, ''); }
-  function toWideAddr(s) {
-    return String(s || '').replace(/[0-9]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0xFEE0); }).replace(/-/g, '－');
+  // 読み取り・重複チェックは customize-maps-paste.js(ネタリストと共用)。ボタンを押したときに参照する
+  function MP() {
+    if (!window.TaimeiMapsPaste) throw new Error('customize-maps-paste.js が読み込まれていません');
+    return window.TaimeiMapsPaste;
   }
-
-  // Googleマップの画面からコピーした文字・アプリの「共有」の文字から、店名・電話・住所・URLを取り出す
-  function parseMapsText(text) {
-    var out = { name: '', phone: '', zip: '', pref: '', addr: '', url: '' };
-    // 判定はNFKC(全角数字・記号を半角に)で行い、店名だけは元の表記のまま使う
-    var raw = String(text || '');
-    var t = raw.normalize('NFKC');
-    var um = t.match(/https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)\S*/);
-    if (um) out.url = um[0];
-    var rawLines = raw.split(/\r?\n/).map(function (l) { return l.trim(); }).filter(function (l) { return l && !/^https?:\/\//.test(l); });
-    var lines = rawLines.map(function (l) { return l.normalize('NFKC').replace(/[−‐‑–—]/g, '-'); });
-    lines.forEach(function (l) {
-      var p = l.replace(/^電話番号[:：]?\s*/, '');
-      if (!out.phone && /^(\+81[\s-]?|0)\d{1,4}[\s-]?\d{1,4}[\s-]?\d{3,4}$/.test(p)) {
-        out.phone = p.replace(/^\+81[\s-]?/, '0').replace(/\s/g, '-');
-        return;
-      }
-      var a = l.replace(/^(住所[:：]?\s*)?(日本、\s*)?/, '');
-      if (!out.addr && (/〒\s*\d{3}-?\d{4}/.test(a) || PREFS.test(a) || /^[^\s]{1,8}市.+区/.test(a))) {
-        var zm = a.match(/〒\s*(\d{3})-?(\d{4})\s*/);
-        if (zm) { out.zip = zm[1] + '-' + zm[2]; a = a.replace(zm[0], ''); }
-        var pm = a.match(PREFS);
-        if (pm) { out.pref = pm[1]; a = a.slice(pm[1].length); }
-        out.addr = a.trim();
-      }
-    });
-    // 店名: 評価(4.3)・件数((120))・営業時間・電話・住所でない最初の行。無ければURLの /place/店名/ から
-    lines.some(function (l, i) {
-      if (/^[\d.,()（）\s★]+$/.test(l) || /営業|定休|時間|クチコミ|口コミ|件$|^〒|^日本、/.test(l)) return false;
-      if (digits(l).length >= 9 && digits(l).length === l.replace(/[\s-]/g, '').length) return false;
-      if (l === out.addr || PREFS.test(l) || l.indexOf(out.addr) >= 0 && out.addr) return false;
-      out.name = rawLines[i].replace(/\s*[·・]\s*$/, '');
-      return true;
-    });
-    if (!out.name && out.url) {
-      var nm = out.url.match(/\/place\/([^/]+)/);
-      if (nm) { try { out.name = decodeURIComponent(nm[1].replace(/\+/g, ' ')); } catch (e) { /* 読めなければ空のまま */ } }
-    }
-    return out;
-  }
-
-  // 顧客管理・ネタリストに同じお店があるか(会社名の一致、または電話番号の数字の一致)
-  function findSame(app, name, phone) {
-    var qs = [];
-    if (name) qs.push(api('/k/v1/records', 'GET', { app: app, query: '会社名 = "' + name.replace(/"/g, '\\"') + '" limit 20' }));
-    var d = digits(phone);
-    if (d.length >= 9) qs.push(api('/k/v1/records', 'GET', { app: app, query: '電話番号 like "' + d.slice(-4) + '" limit 200' }));
-    return kintone.Promise.all(qs).then(function (res) {
-      var seen = {}, out = [];
-      res.forEach(function (r) {
-        r.records.forEach(function (x) {
-          var same = fv(x, '会社名', '') === name || (d.length >= 9 && digits(fv(x, '電話番号', '')) === d);
-          if (same && !seen[x.$id.value]) { seen[x.$id.value] = 1; out.push(x); }
-        });
-      });
-      return out;
-    }).catch(function () { return []; });
-  }
+  function digits(s) { return MP().digits(s); }
+  function toWideAddr(s) { return MP().toWideAddr(s); }
+  function parseMapsText(text) { return MP().parse(text); }
+  function findSame(app, name, phone) { return MP().findSame(app, name, phone); }
 
   // ネタに履歴・担当者・予定があるか(あればネタリストの「顧客管理へ登録」で履歴ごと移してもらう)
   function leadHasHistory(lead) {
@@ -757,7 +703,7 @@
           都道府県: $('.q-pref').value,
           住所: toWideAddr($('.q-addr').value.trim()) || (lead ? fv(lead, '市区町村', '') + fv(lead, '丁目番地等', '') : ''),
           大分類: $('.q-cat').value || (lead ? fv(lead, '大分類', '') : ''),
-          GoogleマップURL: $('.q-url').value.trim()
+          GoogleマップURL: $('.q-url').value.trim() || (lead ? fv(lead, 'GoogleマップURL', '') : '')
         };
         if (lead) ['中分類', '業種メモ', '営業時間', '定休日', '緯度', '経度'].forEach(function (k) { vals[k] = fv(lead, k, ''); });
         if (hasNextField && call.next) vals.次回連絡日 = call.next;

@@ -106,6 +106,7 @@
       "業種メモ": memo,
       "営業時間": fv(record, "営業時間", ""),
       "定休日": fv(record, "定休日", ""),
+      "GoogleマップURL": fv(record, "GoogleマップURL", ""), // 2026-10-16 両アプリに追加(Googleマップからの貼り付け登録で入る)
     };
     Object.keys(optional).forEach(function (key) {
       if (optional[key]) out[key] = { value: optional[key] };
