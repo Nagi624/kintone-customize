@@ -3,7 +3,7 @@
  * PC: カスタマイズ一覧「道場」(<div id="sales-dojo-root"></div>) / スマホ: 一覧「道場(スマホ)」(レコード番号 = 0)のヘッダー
  * メニュー: 段位(ホーム) / 商談クイズ / 切り返しノック / 空気感トレーニング(マイクで間と速さを測る。録音は保存しない) / コーチ画面
  * 1回の練習=このアプリに1レコード(kind で種類を分ける)。段位は練習記録に加え、実戦のデータ
- * (架電トラブル道場38・ネタリスト29の架電履歴とアポ獲得者・案件19・スケジュール34の同席)とコーチの認定レコードから計算する。
+ * (架電トラブル道場38・ネタリスト29の架電履歴とアポ獲得者・活動履歴17の電話・案件19・スケジュール34の同席)とコーチの認定レコードから計算する。
  * 認定レコード(kind=段位認定)は作成者が COACHES のものだけ有効。個人ランキングは出さない(コーチ画面だけ全員の進み具合を見る)。
  * PREVIEW_USERS に人を並べると、その人だけに表示し他の人には「準備中」と出す(null で全員に表示)
  * 問題・お手本を直すときは、営業フォルダ/営業教育資料/MEO商談の型と空気感.md とそろえる。
@@ -269,7 +269,7 @@
     var levels = [
       { name: '初段', title: 'アポ取り', icon: '📞', items: [
         item('架電トラブル道場 ステージ1〜4を★2', callDojoClear(code), 4),
-        item('架電・飛び込みの記録(担当が自分)', real.calls, REQ.calls, 'ネタリストの「架電を記録」で記録したもの'),
+        item('架電・飛び込みの記録(担当が自分)', real.calls, REQ.calls, 'ネタリストの「架電を記録」・顧客管理の「📞 電話を記録」で記録したもの'),
         item('アポ獲得', real.apo, REQ.apo, 'ネタリスト・案件の「アポ獲得者」が自分') ] },
       { name: '二段', title: '商談', icon: '🤝', items: [
         item('商談クイズ ステージ1〜3を★2', q(['q1', 'q2', 'q3']), 3),
@@ -313,11 +313,15 @@
         });
       });
     });
+    // 顧客管理の「📞 電話を記録」は活動履歴17に電話として残る(2026-10-16)
+    var p4 = getAll(17, '対応種別 in ("電話") and 対応者 in (' + list + ')', ['$id', '対応者']).then(function (rs) {
+      rs.forEach(function (r) { (fv(r, '対応者', []) || []).forEach(function (u) { if (res[u.code]) res[u.code].calls++; }); });
+    });
     var p3 = getAll(34, '種類 in ("訪問") and 参加者 in ("' + TAKEI + '") and 開始日時 < NOW()', ['$id', '参加者']).then(function (rs) {
       rs.forEach(function (r) { (fv(r, '参加者', []) || []).forEach(function (u) { if (res[u.code] && u.code !== TAKEI) res[u.code].sit++; }); });
     });
     // 見られないアプリがあっても、ほかの集計は続ける
-    return Promise.all([p1, p2, p3].map(function (p) {
+    return Promise.all([p1, p2, p3, p4].map(function (p) {
       return p.catch(function (e) { if (window.console) console.warn('営業道場: 実戦データの一部を読めませんでした', e); });
     })).then(function () { REAL = res; });
   }

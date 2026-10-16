@@ -1,0 +1,835 @@
+/*
+ * 顧客管理(app18) 詳細画面の「作業パネル」と一覧画面の「Googleマップから電話先を登録」  PC/スマホ両対応(2026-10-16)
+ *
+ * 架電担当が 顧客管理→案件管理→活動履歴 を行き来せず、顧客の画面だけで済むようにする。
+ * データの置き場所は今のまま(案件=19・活動履歴=17・予定=34)。この画面から各アプリへ書き込むだけなので、
+ * 日報の自動取り込み・週報月報・グラフ・見積/請求の紐付けはそのまま動く。
+ *
+ * - 上段: この顧客の案件(進行中)・次の連絡/予定・先方担当者・最近のやりとり を1枚に表示
+ * - 📞 電話を記録: 結果(コール業務)・メモ・次回連絡日 → 活動履歴17に1件(対応種別=電話)。
+ *   結果が「アポ獲得」のときだけ、商談日時・商談担当・提案商品を聞いて案件19を作る(進行中の案件があれば更新)
+ *   → 案件の次回商談日からスケジュール34の予定を作る(customize-schedule-links.js と同じ処理)。
+ *   案件は「商談が決まったら作る」もので、電話1本ごとには作らない。
+ * - 💼 案件を作る・進める: フェーズ・確度・次回商談日などを小窓で更新(新規も可)。次回商談日を変えたら予定も作る/動かす。
+ * - 📅 予定を入れる: 顧客・案件を入れた状態でスケジュールの新規作成画面を開く(受け取りは customize-schedule.js)。
+ * - 📍 Googleマップ: 登録時のGoogleマップURL、無ければ店名+住所の検索で開く。
+ * - 一覧画面「📞 Googleマップから電話先を登録」: Googleマップでコピーした文字(スマホは共有)を貼ると店名・電話・住所を読み取り、
+ *   顧客を登録(顧客ランクは仮のD)して、そのまま電話の結果まで記録する。顧客管理に同じお店があれば登録させずそちらへ案内。
+ *   ネタリストに同じお店があれば、履歴が無いネタは顧客管理へ移し(ネタは削除)、履歴があるネタはネタリストの「顧客管理へ登録」へ案内。
+ *   GoogleのAPIは使わない(取った値は規約で30日を超えて保存できないため。利用者が貼り付けた文字だけを読む)。
+ *
+ * 置き場所: フォームのスペース(要素ID customer_hub)。無ければヘッダーの空き(PCはメニュー横・スマホはヘッダー)に出す。
+ * 前提の欄: 活動履歴17「コール業務」(ドロップダウン)、顧客管理18「次回連絡日」(日付)・「GoogleマップURL」(リンク)。無い場合はその部分を出さない。
+ */
+(function () {
+  'use strict';
+
+  var CUSTOMER_APP_ID = 18;
+  var ACTIVITY_APP_ID = 17;
+  var DEAL_APP_ID = 19;
+  var CONTACT_APP_ID = 20;
+  var SCHEDULE_APP_ID = 34;
+  var MEMBER_APP_ID = 35;
+  var SPACE_ID = 'customer_hub';
+  var ROOT_ID = 'chub-root';
+  var PREFILL_KEY = 'sched-prefill-34';
+
+  // 電話の結果(案件管理の旧「コール業務」と同じ言葉。活動履歴17の「コール業務」に入れる)
+  var CALL_RESULTS = [
+    { v: 'コールのみ', hint: '留守電・通話中・つながらない' },
+    { v: '担当不在', hint: '担当者が不在・手が離せない' },
+    { v: 'ネタ', hint: '話せた(今回はアポなし)' },
+    { v: 'アポ獲得', hint: '商談の約束ができた' }
+  ];
+  var CLOSED = ['受注', '失注', '保留/中止'];
+  var WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
+
+  var IS_MOBILE = false;
+
+  function fv(obj, code, fallback) {
+    return obj && obj[code] && obj[code].value !== undefined && obj[code].value !== null ? obj[code].value : fallback;
+  }
+  function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
+  function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function toKintoneDT(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
+  function dtLabel(iso) {
+    var d = new Date(iso);
+    return (d.getMonth() + 1) + '/' + d.getDate() + '(' + WEEKDAYS[d.getDay()] + ') ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function dLabel(s) {
+    if (!s) return '';
+    var d = new Date(s + 'T00:00:00');
+    return (d.getMonth() + 1) + '/' + d.getDate() + '(' + WEEKDAYS[d.getDay()] + ')';
+  }
+  // <input type="datetime-local"> の値(ローカル時刻) ⇔ kintoneの日時(UTC)
+  function localInput(iso) {
+    if (!iso) return '';
+    var d = new Date(iso);
+    return ymd(d) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+  function fromLocalInput(v) { return v ? toKintoneDT(new Date(v)) : ''; }
+  function users(list) { return (list || []).map(function (u) { return { code: u.code }; }); }
+  function names(list) { return (list || []).map(function (u) { return u.name; }).join('・'); }
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+  function el(tag, attrs, html) {
+    var e = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) { if (k === 'className') e.className = attrs[k]; else e.setAttribute(k, attrs[k]); });
+    if (html !== undefined) e.innerHTML = html;
+    return e;
+  }
+  function dealUrl(id) { return IS_MOBILE ? '/k/m/' + DEAL_APP_ID + '/show?record=' + id : '/k/' + DEAL_APP_ID + '/show#record=' + id; }
+  function actUrl(id) { return IS_MOBILE ? '/k/m/' + ACTIVITY_APP_ID + '/show?record=' + id : '/k/' + ACTIVITY_APP_ID + '/show#record=' + id; }
+
+  // ---------- 見た目 ----------
+  function injectStyle() {
+    if (document.getElementById('chub-style')) return;
+    var css = [
+      '#chub-root{font-size:13px;color:#1e293b;margin:8px 0 12px;max-width:1100px}',
+      '#chub-root .chub-bar{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px}',
+      '#chub-root button.chub-btn{padding:8px 16px;border-radius:6px;border:1px solid #2563eb;background:#fff;color:#2563eb;cursor:pointer;font-size:14px}',
+      '#chub-root button.chub-btn.primary{background:#2563eb;color:#fff}',
+      '#chub-root .chub-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}',
+      '#chub-root .chub-card{border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;background:#f8fafc;min-width:0}',
+      '#chub-root .chub-card h4{margin:0 0 6px;font-size:12px;color:#64748b;font-weight:bold}',
+      '#chub-root .chub-card.wide{grid-column:span 2}',
+      '#chub-root .chub-item{padding:5px 0;border-top:1px dashed #e2e8f0;line-height:1.5;overflow-wrap:anywhere}',
+      '#chub-root .chub-item:first-of-type{border-top:none}',
+      '#chub-root .chub-muted{color:#94a3b8}',
+      '#chub-root .chub-warn{color:#b91c1c;font-weight:bold}',
+      '#chub-root a{color:#2563eb;text-decoration:none}',
+      '.chub-badge{display:inline-block;padding:1px 7px;border-radius:10px;font-size:11px;margin-right:4px;background:#e2e8f0;color:#334155;white-space:nowrap}',
+      '.chub-badge.b-apo{background:#dcfce7;color:#166534}.chub-badge.b-neta{background:#fef9c3;color:#854d0e}',
+      '.chub-badge.b-fuzai{background:#e0e7ff;color:#3730a3}.chub-badge.b-call{background:#f1f5f9;color:#475569}',
+      '.chub-badge.b-visit{background:#fce7f3;color:#9d174d}',
+      '#chub-root.chub-m .chub-grid{grid-template-columns:1fr}',
+      '#chub-root.chub-m .chub-card.wide{grid-column:auto}',
+      '#chub-root.chub-m .chub-bar button.chub-btn{flex:1 1 100%;padding:12px}',
+      '#chub-root.chub-m{margin:8px 12px}',
+      '.chub-bg{position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:10000;display:flex;align-items:center;justify-content:center;padding:12px}',
+      '.chub-modal{background:#fff;border-radius:10px;padding:16px;width:100%;max-width:460px;max-height:calc(100vh - 24px);overflow:auto;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25);box-sizing:border-box}',
+      '.chub-modal h3{margin:0 0 4px;font-size:16px}',
+      '.chub-modal .chub-sub{color:#64748b;font-size:12px;margin-bottom:10px}',
+      '.chub-modal label{display:block;color:#475569;margin:12px 0 5px;font-size:13px}',
+      '.chub-modal input,.chub-modal select,.chub-modal textarea{width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px;font-family:inherit}',
+      '.chub-modal textarea{min-height:70px}',
+      '.chub-results{display:grid;grid-template-columns:1fr 1fr;gap:6px}',
+      '.chub-results button{padding:8px 6px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;text-align:left;line-height:1.3}',
+      '.chub-results button small{display:block;color:#64748b;font-size:11px}',
+      '.chub-results button.on{background:#1e293b;color:#fff;border-color:#1e293b}.chub-results button.on small{color:#cbd5e1}',
+      '.chub-apo{margin-top:12px;padding:10px 12px;border:1px solid #86efac;background:#f0fdf4;border-radius:8px}',
+      '.chub-apo b{color:#166534}',
+      '.chub-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}',
+      '.chub-btns button{padding:9px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:14px}',
+      '.chub-btns button.primary{border-color:#2563eb;background:#2563eb;color:#fff}',
+      '.chub-btns button:disabled{opacity:.5;cursor:default}',
+      '.chub-row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}'
+    ].join('\n');
+    var s = el('style', { id: 'chub-style' });
+    s.textContent = css;
+    document.head.appendChild(s);
+  }
+
+  function badgeOf(a) {
+    var r = fv(a, 'コール業務', '');
+    var kind = fv(a, '対応種別', '');
+    if (r) {
+      var cls = r === 'アポ獲得' ? 'b-apo' : r === 'ネタ' ? 'b-neta' : r === '担当不在' ? 'b-fuzai' : 'b-call';
+      return '<span class="chub-badge ' + cls + '">📞 ' + esc(r) + '</span>';
+    }
+    if (kind.indexOf('商談') === 0) return '<span class="chub-badge b-visit">🤝 ' + esc(kind) + '</span>';
+    return '<span class="chub-badge">' + esc(kind || 'その他') + '</span>';
+  }
+
+  // ---------- データ ----------
+  function loadAll(custNo) {
+    var q = function (p) { return p.catch(function () { return { records: [] }; }); };
+    return kintone.Promise.all([
+      q(api('/k/v1/records', 'GET', { app: DEAL_APP_ID, query: '顧客No_ = "' + custNo + '" order by 案件No_ desc limit 50',
+        fields: ['$id', '案件No_', '案件名', '会社名', '顧客No_', '提案商品', '商談フェーズ', '確度', '次回商談日', '受注予定日', '売上', '主担当', '商談担当者', 'アポ獲得者'] })),
+      q(api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, query: '顧客No = "' + custNo + '" order by 対応日付 desc, $id desc limit 6',
+        fields: ['$id', '対応日付', '対応種別', 'コール業務', '対応者', '内容', 'タイトル'] })),
+      q(api('/k/v1/records', 'GET', { app: CONTACT_APP_ID, query: '顧客No_ = "' + custNo + '" limit 20',
+        fields: ['$id', 'お名前', '姓', '名', '役職', '部署', '電話番号', '携帯番号', '決裁権'] })),
+      // スケジュールを見られない人もいるので、失敗したら空として扱う
+      q(api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID,
+        query: '顧客No = "' + custNo + '" and 元予定No = "" and 実施状況 in ("予定") and 開始日時 >= NOW() order by 開始日時 asc limit 3',
+        fields: ['$id', '件名', '種類', '開始日時', '参加者'] })),
+      q(api('/k/v1/app/form/fields', 'GET', { app: DEAL_APP_ID }).then(function (r) { return { records: [], props: r.properties }; }))
+    ]).then(function (res) {
+      return { deals: res[0].records, acts: res[1].records, contacts: res[2].records, plans: res[3].records, dealProps: res[4].props || {} };
+    });
+  }
+
+  function optionsOf(props, code, fallback) {
+    var o = props[code] && props[code].options;
+    if (!o) return fallback;
+    return Object.keys(o).sort(function (a, b) { return Number(o[a].index) - Number(o[b].index); });
+  }
+
+  // 商談担当の候補: スケジュール表示メンバー(35)。読めなければ自分だけ
+  var memberCache = null;
+  function loadMembers() {
+    if (memberCache) return kintone.Promise.resolve(memberCache);
+    var me = kintone.getLoginUser();
+    return api('/k/v1/records', 'GET', { app: MEMBER_APP_ID, query: '表示 in ("する") order by 表示順 asc limit 100', fields: ['メンバー'] })
+      .then(function (resp) {
+        var list = [];
+        resp.records.forEach(function (r) { fv(r, 'メンバー', []).forEach(function (u) { if (!list.some(function (x) { return x.code === u.code; })) list.push(u); }); });
+        if (!list.some(function (x) { return x.code === me.code; })) list.unshift({ code: me.code, name: me.name });
+        memberCache = list;
+        return list;
+      }).catch(function () { memberCache = [{ code: me.code, name: me.name }]; return memberCache; });
+  }
+
+  // ---------- スケジュール連動(customize-schedule-links.js の pushToSchedule と同じ考え方) ----------
+  function findAt(dealNo, iso) {
+    return api('/k/v1/records', 'GET', {
+      app: SCHEDULE_APP_ID, fields: ['$id', '開始日時', '終了日時', '公開区分'],
+      query: '案件No = "' + dealNo + '" and 元予定No = "" and 開始日時 = "' + iso + '" limit 1'
+    }).then(function (resp) { return resp.records[0] || null; });
+  }
+
+  // deal: {会社名, 提案商品, 顧客No_, 商談担当者[], 主担当[], 次回商談日}
+  function pushToSchedule(dealNo, deal, prev) {
+    var next = deal.次回商談日;
+    if (!next) return kintone.Promise.resolve('');
+    return kintone.Promise.all([findAt(dealNo, next), prev ? findAt(dealNo, prev) : kintone.Promise.resolve(null)]).then(function (res) {
+      if (res[0]) return '';
+      var old = res[1];
+      if (old) {
+        if (fv(old, '公開区分', '') === '非公開') throw new Error('前の次回商談日の予定が非公開のため、自動では動かしませんでした。スケジュールで直してください。');
+        var dur = new Date(fv(old, '終了日時', '')).getTime() - new Date(fv(old, '開始日時', '')).getTime();
+        var end = new Date(new Date(next).getTime() + (dur > 0 ? dur : 3600000));
+        return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: old.$id.value, record: { 開始日時: { value: next }, 終了日時: { value: toKintoneDT(end) } } })
+          .then(function () { return 'スケジュールの予定(' + dtLabel(next) + ')を動かしました。'; });
+      }
+      var us = deal.商談担当者 && deal.商談担当者.length ? deal.商談担当者 : (deal.主担当 && deal.主担当.length ? deal.主担当 : [kintone.getLoginUser()]);
+      var name = deal.会社名 + (deal.提案商品 ? ' / ' + deal.提案商品 : '');
+      var rec = {
+        件名: { value: '商談: ' + name }, 種類: { value: '訪問' },
+        開始日時: { value: next }, 終了日時: { value: toKintoneDT(new Date(new Date(next).getTime() + 3600000)) },
+        参加者: { value: users(us) }, 案件No: { value: String(dealNo) },
+        リマインダー: { value: ['1時間前', '当日の朝8時'] },
+        出欠: { value: us.map(function (u) { return { value: { 出欠_参加者: { value: [{ code: u.code }] }, 出欠_回答: { value: '承諾' }, 出欠_コメント: { value: '' } } }; }) },
+        内容: { value: '(案件管理の次回商談日から自動作成)' }
+      };
+      if (deal.顧客No_) rec.顧客No = { value: String(deal.顧客No_) };
+      return api('/k/v1/record', 'POST', { app: SCHEDULE_APP_ID, record: rec })
+        .then(function () { return 'スケジュールに予定(' + dtLabel(next) + ')を作りました。'; });
+    });
+  }
+
+  // ---------- パネル ----------
+  function openDeals(deals) { return deals.filter(function (d) { return CLOSED.indexOf(fv(d, '商談フェーズ', '')) < 0; }); }
+
+  function render(root, ctx) {
+    var r = ctx.record, data = ctx.data;
+    var open = openDeals(data.deals);
+    var closed = data.deals.length - open.length;
+    root.innerHTML = '';
+    root.className = IS_MOBILE ? 'chub-m' : '';
+
+    var bar = el('div', { className: 'chub-bar' });
+    var b1 = el('button', { type: 'button', className: 'chub-btn primary' }, '📞 電話を記録');
+    var b2 = el('button', { type: 'button', className: 'chub-btn' }, '💼 案件を作る・進める');
+    var b3 = el('button', { type: 'button', className: 'chub-btn' }, '📅 予定を入れる');
+    b1.addEventListener('click', function () { openCallDialog(ctx); });
+    b2.addEventListener('click', function () { openDealDialog(ctx, open.length === 1 ? open[0] : null); });
+    b3.addEventListener('click', function () { openSchedule(ctx); });
+    bar.appendChild(b1); bar.appendChild(b2); bar.appendChild(b3);
+    // Googleマップ: 登録時のURLがあればそれ、無ければ店名+住所で検索
+    var murl = fv(r, 'GoogleマップURL', '') || 'https://www.google.com/maps/search/?api=1&query=' +
+      encodeURIComponent([fv(r, '会社名', ''), fv(r, '都道府県', ''), fv(r, '住所', '')].join(' ').trim());
+    var b4 = el('button', { type: 'button', className: 'chub-btn' }, '📍 Googleマップ');
+    b4.addEventListener('click', function () { window.open(murl, '_blank'); });
+    bar.appendChild(b4);
+    root.appendChild(bar);
+
+    var grid = el('div', { className: 'chub-grid' });
+
+    // 案件
+    var h = '<h4>💼 案件(進行中 ' + open.length + '件' + (closed ? '・終了 ' + closed + '件' : '') + ')</h4>';
+    if (!open.length) h += '<div class="chub-muted">進行中の案件はありません。<br>アポが取れたら「📞 電話を記録」→アポ獲得で自動で作られます。</div>';
+    open.forEach(function (d) {
+      var next = fv(d, '次回商談日', '');
+      var late = next && new Date(next) < new Date();
+      h += '<div class="chub-item"><a href="' + dealUrl(d.$id.value) + '">' + esc(fv(d, '提案商品', '') || '(商品未選択)') + '</a> ' +
+        '<span class="chub-badge">' + esc(fv(d, '商談フェーズ', '') || 'フェーズ未入力') + '</span>' +
+        (fv(d, '確度', '') ? '<span class="chub-badge">確度 ' + esc(fv(d, '確度', '')) + '</span>' : '') +
+        '<br>次回商談: ' + (next ? '<span class="' + (late ? 'chub-warn' : '') + '">' + dtLabel(next) + (late ? '(過ぎています)' : '') + '</span>' : '<span class="chub-muted">未定</span>') +
+        (names(fv(d, '商談担当者', [])) ? '<br><span class="chub-muted">商談: ' + esc(names(fv(d, '商談担当者', []))) + '</span>' : '') + '</div>';
+    });
+    grid.appendChild(el('div', { className: 'chub-card' }, h));
+
+    // 次の連絡・予定
+    var nextCall = fv(r, '次回連絡日', '');
+    h = '<h4>📌 次にやること</h4>';
+    if (r['次回連絡日']) {
+      var lateCall = nextCall && nextCall < ymd(new Date());
+      h += '<div class="chub-item">次回連絡日: ' + (nextCall ? '<span class="' + (lateCall ? 'chub-warn' : '') + '">' + dLabel(nextCall) + (lateCall ? '(過ぎています)' : '') + '</span>' : '<span class="chub-muted">未定</span>') + '</div>';
+    }
+    if (data.plans.length) {
+      data.plans.forEach(function (p) {
+        h += '<div class="chub-item">📅 ' + dtLabel(fv(p, '開始日時', '')) + ' ' + esc(fv(p, '件名', '')) + '<br><span class="chub-muted">' + esc(names(fv(p, '参加者', []))) + '</span></div>';
+      });
+    } else {
+      h += '<div class="chub-item chub-muted">これからの予定はありません</div>';
+    }
+    grid.appendChild(el('div', { className: 'chub-card' }, h));
+
+    // 先方担当者
+    h = '<h4>👤 先方の担当者</h4>';
+    if (!data.contacts.length) h += '<div class="chub-muted">未登録</div>';
+    data.contacts.forEach(function (c) {
+      var nm = fv(c, 'お名前', '') || (fv(c, '姓', '') + ' ' + fv(c, '名', '')).trim();
+      var tel = fv(c, '携帯番号', '') || fv(c, '電話番号', '');
+      h += '<div class="chub-item">' + esc(nm) + (fv(c, '決裁権', '') === 'あり' ? ' <span class="chub-badge b-apo">決裁者</span>' : '') +
+        '<br><span class="chub-muted">' + esc([fv(c, '部署', ''), fv(c, '役職', '')].filter(Boolean).join(' ')) + '</span>' +
+        (tel ? '<br><a href="tel:' + esc(tel.replace(/[^\d+]/g, '')) + '">📞 ' + esc(tel) + '</a>' : '') + '</div>';
+    });
+    grid.appendChild(el('div', { className: 'chub-card' }, h));
+
+    // 最近のやりとり
+    h = '<h4>🕘 最近のやりとり</h4>';
+    if (!data.acts.length) h += '<div class="chub-muted">まだありません</div>';
+    data.acts.slice(0, 5).forEach(function (a) {
+      var memo = fv(a, '内容', '').replace(/\s+/g, ' ');
+      h += '<div class="chub-item">' + dLabel(fv(a, '対応日付', '')) + ' ' + badgeOf(a) + '<span class="chub-muted">' + esc(names(fv(a, '対応者', []))) + '</span>' +
+        (memo ? '<br><a href="' + actUrl(a.$id.value) + '" style="color:#334155">' + esc(memo.length > 46 ? memo.slice(0, 46) + '…' : memo) + '</a>' : '') + '</div>';
+    });
+    grid.appendChild(el('div', { className: 'chub-card' }, h));
+
+    root.appendChild(grid);
+  }
+
+  // ---------- 📞 電話を記録 ----------
+  // 電話の結果・アポ・メモ・次回連絡日の入力欄(電話を記録/新規登録の両方で使う)
+  // opts: {open(進行中の案件), dealProps, hasNextField, nextValue}。戻り値: {el, read(): 入力値 or null(足りない)}
+  function buildCallForm(opts) {
+    var open = opts.open || [];
+    var w = el('div');
+    w.innerHTML = '<label>結果</label><div class="chub-results"></div>' +
+      '<div class="chub-apo" style="display:none"><b>🎉 アポ獲得 — 商談の予定</b>' +
+      '<label>商談の日時</label><input type="datetime-local" class="c-apo-dt">' +
+      '<div class="chub-row2"><div><label>商談に行く人</label><select class="c-apo-user"></select></div>' +
+      '<div><label>提案商品</label><select class="c-apo-item"></select></div></div>' +
+      '<div class="chub-sub" style="margin:8px 0 0">' + (open.length ? '進行中の案件(' + esc(fv(open[0], '提案商品', '') || '商品未選択') + ')の次回商談日を更新します。' : '案件を新しく作り、') + 'スケジュールにも予定が入ります。</div></div>' +
+      '<label>メモ(話した内容・相手の名前・かけ直す時間など)</label><textarea class="c-memo"></textarea>' +
+      (opts.hasNextField ? '<label>次回連絡日(またかけるとき)</label><input type="date" class="c-next">' : '');
+    var chosen = '';
+    var box = w.querySelector('.chub-results');
+    var apoBox = w.querySelector('.chub-apo');
+    CALL_RESULTS.forEach(function (c) {
+      var b = el('button', { type: 'button' }, esc(c.v) + '<small>' + esc(c.hint) + '</small>');
+      b.addEventListener('click', function () {
+        chosen = c.v;
+        [].forEach.call(box.children, function (x) { x.classList.remove('on'); });
+        b.classList.add('on');
+        apoBox.style.display = chosen === 'アポ獲得' ? 'block' : 'none';
+      });
+      box.appendChild(b);
+    });
+    if (opts.hasNextField && opts.nextValue) w.querySelector('.c-next').value = opts.nextValue;
+    var itemSel = w.querySelector('.c-apo-item');
+    optionsOf(opts.dealProps || {}, '提案商品', ['RIDE CAST(タクシー動画広告)', 'MEO代行', 'その他']).forEach(function (v) {
+      var o = el('option', { value: v }, esc(v));
+      if (v === (open.length ? fv(open[0], '提案商品', '') : 'MEO代行')) o.selected = true;
+      itemSel.appendChild(o);
+    });
+    var userSel = w.querySelector('.c-apo-user');
+    var me = kintone.getLoginUser();
+    loadMembers().then(function (list) {
+      list.forEach(function (u) {
+        var o = el('option', { value: u.code }, esc(u.name));
+        if (u.code === me.code) o.selected = true;
+        userSel.appendChild(o);
+      });
+    });
+    return {
+      el: w,
+      read: function () {
+        if (!chosen) { alert('結果を選んでください'); return null; }
+        var apoDt = fromLocalInput(w.querySelector('.c-apo-dt').value);
+        if (chosen === 'アポ獲得' && !apoDt) { alert('商談の日時を入れてください'); return null; }
+        return {
+          open: open, chosen: chosen, memo: w.querySelector('.c-memo').value.trim(),
+          next: opts.hasNextField ? w.querySelector('.c-next').value : '', prevNext: opts.nextValue || '', hasNextField: opts.hasNextField,
+          apoDt: apoDt, apoUser: { code: userSel.value, name: userSel.options[userSel.selectedIndex] ? userSel.options[userSel.selectedIndex].text : '' },
+          item: itemSel.value
+        };
+      }
+    };
+  }
+
+  function openCallDialog(ctx) {
+    var r = ctx.record, data = ctx.data;
+    var form = buildCallForm({ open: openDeals(data.deals), dealProps: data.dealProps, hasNextField: !!r['次回連絡日'], nextValue: fv(r, '次回連絡日', '') });
+    var bg = el('div', { className: 'chub-bg' });
+    var m = el('div', { className: 'chub-modal' });
+    m.innerHTML = '<h3>📞 電話を記録</h3><div class="chub-sub">' + esc(fv(r, '会社名', '')) + ' ・ 今日 ・ ' + esc(kintone.getLoginUser().name) + '(活動履歴に1件残ります)</div>';
+    m.appendChild(form.el);
+    m.appendChild(el('div', { className: 'chub-btns' }, '<button type="button" class="c-cancel">キャンセル</button><button type="button" class="primary c-save">保存</button>'));
+    bg.appendChild(m);
+    document.body.appendChild(bg);
+
+    function close() { if (bg.parentNode) document.body.removeChild(bg); }
+    m.querySelector('.c-cancel').addEventListener('click', close);
+    m.querySelector('.c-save').addEventListener('click', function () {
+      var p = form.read();
+      if (!p) return;
+      var btn = this;
+      btn.disabled = true;
+      var msgs = [];
+      p.custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
+      p.company = fv(r, '会社名', '');
+      recordCall(p, msgs).then(function () {
+        close();
+        alert('記録しました。' + (msgs.length ? '\n' + msgs.join('\n') : ''));
+        location.reload();
+      }).catch(function (err) {
+        btn.disabled = false;
+        alert('記録できませんでした。' + (msgs.length ? '\n(ここまでは済んでいます: ' + msgs.join(' ') + ')' : '') + (err && err.message ? '\n' + err.message : ''));
+      });
+    });
+  }
+
+  // 電話1本の記録: アポ獲得なら案件を作る/更新して予定も入れ、活動履歴に1件、次回連絡日を更新する。
+  // p: {custNo, company, open(進行中の案件), chosen, memo, next, prevNext, hasNextField, apoDt, apoUser, item}
+  // msgs: 済んだことを順に足していく(途中で失敗したときに伝えるため)
+  function recordCall(p, msgs) {
+    var me = kintone.getLoginUser();
+    var open = p.open || [], chosen = p.chosen, memo = p.memo, custNo = p.custNo, company = p.company;
+    var apoDt = p.apoDt, next = p.next;
+    // 1. アポ獲得なら案件を作る/更新して、予定も入れる
+    var dealP = kintone.Promise.resolve(open.length === 1 ? open[0].$id.value : '');
+    if (chosen === 'アポ獲得') {
+      var pickedUser = p.apoUser;
+      var item = p.item;
+      if (open.length) {
+        var d = open[0];
+        var prev = fv(d, '次回商談日', '');
+        var upd = { 次回商談日: { value: apoDt }, 商談担当者: { value: [{ code: pickedUser.code }] } };
+        if (!fv(d, '商談フェーズ', '')) upd.商談フェーズ = { value: '商談予定' };
+        if (!fv(d, '提案商品', '')) upd.提案商品 = { value: item };
+        if (!fv(d, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
+        dealP = api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: d.$id.value, record: upd }).then(function () {
+          msgs.push('案件(' + (fv(d, '提案商品', '') || item) + ')の次回商談日を ' + dtLabel(apoDt) + ' にしました。');
+          return pushToSchedule(d.$id.value, { 会社名: company, 提案商品: fv(d, '提案商品', '') || item, 顧客No_: custNo, 商談担当者: [pickedUser], 次回商談日: apoDt }, prev);
+        }).then(function (m2) { if (m2) msgs.push(m2); return d.$id.value; });
+      } else {
+        var rec = {
+          会社名: { value: company }, 提案商品: { value: item }, 商談フェーズ: { value: '商談予定' },
+          主担当: { value: [{ code: me.code }] }, 商談担当者: { value: [{ code: pickedUser.code }] }, アポ獲得者: { value: [{ code: me.code }] },
+          初回商談日: { value: ymd(new Date(apoDt)) }, 次回商談日: { value: apoDt },
+          詳細: { value: memo ? '(アポ獲得時のメモ)' + memo : '' }
+        };
+        dealP = api('/k/v1/record', 'POST', { app: DEAL_APP_ID, record: rec }).then(function (resp) {
+          msgs.push('案件(' + item + ')を作りました。');
+          return pushToSchedule(resp.id, { 会社名: company, 提案商品: item, 顧客No_: custNo, 商談担当者: [pickedUser], 次回商談日: apoDt }, '')
+            .then(function (m2) { if (m2) msgs.push(m2); return resp.id; });
+        });
+      }
+    }
+
+    // 2. 活動履歴に1件(案件があれば紐付け) 3. 次回連絡日
+    return dealP.then(function (dealNo) {
+      var act = {
+        タイトル: { value: '電話: ' + company }, 対応日付: { value: ymd(new Date()) },
+        対応者: { value: [{ code: me.code }] }, 対応種別: { value: '電話' }, コール業務: { value: chosen },
+        内容: { value: memo || chosen }, 会社名: { value: company }
+      };
+      if (dealNo) act.案件No = { value: String(dealNo) };
+      return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act });
+    }).then(function () {
+      msgs.push('活動履歴に記録しました。');
+      if (!p.hasNextField || next === (p.prevNext || '')) return null;
+      return api('/k/v1/record', 'PUT', { app: CUSTOMER_APP_ID, id: custNo, record: { 次回連絡日: { value: next || null } } });
+    });
+  }
+
+  // ---------- 💼 案件を作る・進める ----------
+  function openDealDialog(ctx, target) {
+    var r = ctx.record, data = ctx.data, props = data.dealProps;
+    var open = openDeals(data.deals);
+    var bg = el('div', { className: 'chub-bg' });
+    var m = el('div', { className: 'chub-modal' });
+    m.innerHTML = '<h3>💼 案件を作る・進める</h3><div class="chub-sub">' + esc(fv(r, '会社名', '')) + '</div>' +
+      '<label>どの案件?</label><select class="d-target"></select>' +
+      '<div class="chub-row2"><div><label>提案商品</label><select class="d-item"></select></div>' +
+      '<div><label>商談フェーズ</label><select class="d-phase"></select></div></div>' +
+      '<div class="chub-row2"><div><label>確度</label><select class="d-kakudo"></select></div>' +
+      '<div><label>商談に行く人</label><select class="d-user"></select></div></div>' +
+      '<label>次回商談日(入れるとスケジュールにも入ります)</label><input type="datetime-local" class="d-next">' +
+      '<div class="chub-row2"><div><label>受注予定日</label><input type="date" class="d-due"></div>' +
+      '<div><label>売上(円)</label><input type="number" class="d-amount" min="0" step="1"></div></div>' +
+      '<div class="chub-sub" style="margin-top:10px">見積書の作成・契約書の添付は <span class="d-open"></span> から。</div>' +
+      '<div class="chub-btns"><button type="button" class="d-cancel">キャンセル</button><button type="button" class="primary d-save">保存</button></div>';
+    bg.appendChild(m);
+    document.body.appendChild(bg);
+
+    var tSel = m.querySelector('.d-target');
+    open.forEach(function (d) {
+      tSel.appendChild(el('option', { value: d.$id.value }, esc((fv(d, '提案商品', '') || '商品未選択') + ' / ' + (fv(d, '商談フェーズ', '') || 'フェーズ未入力') + '(案件No.' + d.$id.value + ')')));
+    });
+    tSel.appendChild(el('option', { value: '' }, '＋ 新しい案件を作る'));
+    if (target) tSel.value = target.$id.value; else if (!open.length) tSel.value = '';
+
+    function fill(sel, code, fallback, cur, blank) {
+      sel.innerHTML = '';
+      if (blank) sel.appendChild(el('option', { value: '' }, '(未選択)'));
+      optionsOf(props, code, fallback).forEach(function (v) { var o = el('option', { value: v }, esc(v)); if (v === cur) o.selected = true; sel.appendChild(o); });
+    }
+    var uSel = m.querySelector('.d-user');
+    var me = kintone.getLoginUser();
+    var membersP = loadMembers();
+    function load() {
+      var d = open.filter(function (x) { return x.$id.value === tSel.value; })[0] || null;
+      fill(m.querySelector('.d-item'), '提案商品', ['RIDE CAST(タクシー動画広告)', 'MEO代行', 'その他'], d ? fv(d, '提案商品', '') : 'MEO代行', true);
+      fill(m.querySelector('.d-phase'), '商談フェーズ', ['商談予定', '提案中', '内示', '受注', '失注', '保留/中止'], d ? fv(d, '商談フェーズ', '') : '商談予定', true);
+      fill(m.querySelector('.d-kakudo'), '確度', ['100%', '80%', '60%', '40%', '20%'], d ? fv(d, '確度', '') : '', true);
+      m.querySelector('.d-next').value = d ? localInput(fv(d, '次回商談日', '')) : '';
+      m.querySelector('.d-due').value = d ? fv(d, '受注予定日', '') : '';
+      m.querySelector('.d-amount').value = d ? fv(d, '売上', '') : '';
+      m.querySelector('.d-open').innerHTML = d ? '<a href="' + dealUrl(d.$id.value) + '">案件の画面</a>' : '保存後の案件の画面';
+      var cur = d && fv(d, '商談担当者', []).length ? fv(d, '商談担当者', [])[0].code : me.code;
+      membersP.then(function (list) {
+        uSel.innerHTML = '';
+        uSel.appendChild(el('option', { value: '' }, '(未選択)'));
+        list.forEach(function (u) { var o = el('option', { value: u.code }, esc(u.name)); if (u.code === cur) o.selected = true; uSel.appendChild(o); });
+      });
+      return d;
+    }
+    var current = load();
+    tSel.addEventListener('change', function () { current = load(); });
+
+    function close() { if (bg.parentNode) document.body.removeChild(bg); }
+    m.querySelector('.d-cancel').addEventListener('click', close);
+    m.querySelector('.d-save').addEventListener('click', function () {
+      var btn = this;
+      var item = m.querySelector('.d-item').value;
+      var phase = m.querySelector('.d-phase').value;
+      if (!phase) { alert('商談フェーズを選んでください'); return; }
+      var next = fromLocalInput(m.querySelector('.d-next').value);
+      var amount = m.querySelector('.d-amount').value;
+      var picked = uSel.value ? [{ code: uSel.value, name: uSel.options[uSel.selectedIndex].text }] : [];
+      var rec = {
+        提案商品: { value: item }, 商談フェーズ: { value: phase }, 確度: { value: m.querySelector('.d-kakudo').value },
+        次回商談日: { value: next || null }, 受注予定日: { value: m.querySelector('.d-due').value || null },
+        売上: { value: amount === '' ? null : amount }, 商談担当者: { value: users(picked) }
+      };
+      var prev = current ? fv(current, '次回商談日', '') : '';
+      var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
+      btn.disabled = true;
+      var p;
+      if (current) {
+        p = api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: current.$id.value, record: rec }).then(function () { return current.$id.value; });
+      } else {
+        rec.会社名 = { value: fv(r, '会社名', '') };
+        rec.主担当 = { value: [{ code: me.code }] };
+        p = api('/k/v1/record', 'POST', { app: DEAL_APP_ID, record: rec }).then(function (resp) { return resp.id; });
+      }
+      p.then(function (dealNo) {
+        if (!next || (prev && new Date(prev).getTime() === new Date(next).getTime())) return '';
+        return pushToSchedule(dealNo, { 会社名: fv(r, '会社名', ''), 提案商品: item, 顧客No_: custNo, 商談担当者: picked, 主担当: [me], 次回商談日: next }, prev);
+      }).then(function (msg) {
+        close();
+        alert('案件を保存しました。' + (msg ? '\n' + msg : ''));
+        location.reload();
+      }).catch(function (err) {
+        btn.disabled = false;
+        alert('保存できませんでした。' + (err && err.message ? '\n' + err.message : ''));
+      });
+    });
+  }
+
+  // ---------- 📅 予定を入れる ----------
+  function openSchedule(ctx) {
+    var r = ctx.record;
+    var open = openDeals(ctx.data.deals);
+    var s = new Date();
+    s.setMinutes(0, 0, 0);
+    s.setHours(s.getHours() + 1);
+    var me = kintone.getLoginUser();
+    var prefill = {
+      start: toKintoneDT(s), end: toKintoneDT(new Date(s.getTime() + 3600000)), allDay: false,
+      user: { code: me.code, name: me.name }, title: '訪問: ' + fv(r, '会社名', ''), type: '訪問',
+      custNo: fv(r, '顧客No', '') || fv(r, '$id', '')
+    };
+    if (open.length === 1) prefill.dealNo = open[0].$id.value;
+    try { sessionStorage.setItem(PREFILL_KEY, JSON.stringify(prefill)); } catch (e) { /* 自動入力なしで開く */ }
+    location.href = IS_MOBILE ? '/k/m/' + SCHEDULE_APP_ID + '/edit' : '/k/' + SCHEDULE_APP_ID + '/edit';
+  }
+
+  // ---------- 📞 Googleマップから電話先を登録(一覧画面) ----------
+  // Googleマップで見つけたお店を、顧客登録+電話の記録まで1画面で行う。
+  // 読み取りは利用者が貼り付けた文字だけ(GoogleのAPIで取った値は規約で30日を超えて保存できないため、APIは使わない)。
+  var LEAD_APP_ID = 29;
+  var PREFS = /^(北海道|東京都|京都府|大阪府|.{2,3}県)/;
+
+  function digits(s) { return String(s || '').normalize('NFKC').replace(/\D/g, ''); }
+  function toWideAddr(s) {
+    return String(s || '').replace(/[0-9]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0xFEE0); }).replace(/-/g, '－');
+  }
+
+  // Googleマップの画面からコピーした文字・アプリの「共有」の文字から、店名・電話・住所・URLを取り出す
+  function parseMapsText(text) {
+    var out = { name: '', phone: '', zip: '', pref: '', addr: '', url: '' };
+    // 判定はNFKC(全角数字・記号を半角に)で行い、店名だけは元の表記のまま使う
+    var raw = String(text || '');
+    var t = raw.normalize('NFKC');
+    var um = t.match(/https?:\/\/(?:maps\.app\.goo\.gl|goo\.gl\/maps|(?:www\.)?google\.[a-z.]+\/maps|maps\.google\.[a-z.]+)\S*/);
+    if (um) out.url = um[0];
+    var rawLines = raw.split(/\r?\n/).map(function (l) { return l.trim(); }).filter(function (l) { return l && !/^https?:\/\//.test(l); });
+    var lines = rawLines.map(function (l) { return l.normalize('NFKC').replace(/[−‐‑–—]/g, '-'); });
+    lines.forEach(function (l) {
+      var p = l.replace(/^電話番号[:：]?\s*/, '');
+      if (!out.phone && /^(\+81[\s-]?|0)\d{1,4}[\s-]?\d{1,4}[\s-]?\d{3,4}$/.test(p)) {
+        out.phone = p.replace(/^\+81[\s-]?/, '0').replace(/\s/g, '-');
+        return;
+      }
+      var a = l.replace(/^(住所[:：]?\s*)?(日本、\s*)?/, '');
+      if (!out.addr && (/〒\s*\d{3}-?\d{4}/.test(a) || PREFS.test(a) || /^[^\s]{1,8}市.+区/.test(a))) {
+        var zm = a.match(/〒\s*(\d{3})-?(\d{4})\s*/);
+        if (zm) { out.zip = zm[1] + '-' + zm[2]; a = a.replace(zm[0], ''); }
+        var pm = a.match(PREFS);
+        if (pm) { out.pref = pm[1]; a = a.slice(pm[1].length); }
+        out.addr = a.trim();
+      }
+    });
+    // 店名: 評価(4.3)・件数((120))・営業時間・電話・住所でない最初の行。無ければURLの /place/店名/ から
+    lines.some(function (l, i) {
+      if (/^[\d.,()（）\s★]+$/.test(l) || /営業|定休|時間|クチコミ|口コミ|件$|^〒|^日本、/.test(l)) return false;
+      if (digits(l).length >= 9 && digits(l).length === l.replace(/[\s-]/g, '').length) return false;
+      if (l === out.addr || PREFS.test(l) || l.indexOf(out.addr) >= 0 && out.addr) return false;
+      out.name = rawLines[i].replace(/\s*[·・]\s*$/, '');
+      return true;
+    });
+    if (!out.name && out.url) {
+      var nm = out.url.match(/\/place\/([^/]+)/);
+      if (nm) { try { out.name = decodeURIComponent(nm[1].replace(/\+/g, ' ')); } catch (e) { /* 読めなければ空のまま */ } }
+    }
+    return out;
+  }
+
+  // 顧客管理・ネタリストに同じお店があるか(会社名の一致、または電話番号の数字の一致)
+  function findSame(app, name, phone) {
+    var qs = [];
+    if (name) qs.push(api('/k/v1/records', 'GET', { app: app, query: '会社名 = "' + name.replace(/"/g, '\\"') + '" limit 20' }));
+    var d = digits(phone);
+    if (d.length >= 9) qs.push(api('/k/v1/records', 'GET', { app: app, query: '電話番号 like "' + d.slice(-4) + '" limit 200' }));
+    return kintone.Promise.all(qs).then(function (res) {
+      var seen = {}, out = [];
+      res.forEach(function (r) {
+        r.records.forEach(function (x) {
+          var same = fv(x, '会社名', '') === name || (d.length >= 9 && digits(fv(x, '電話番号', '')) === d);
+          if (same && !seen[x.$id.value]) { seen[x.$id.value] = 1; out.push(x); }
+        });
+      });
+      return out;
+    }).catch(function () { return []; });
+  }
+
+  // ネタに履歴・担当者・予定があるか(あればネタリストの「顧客管理へ登録」で履歴ごと移してもらう)
+  function leadHasHistory(lead) {
+    var rows = fv(lead, '架電履歴', []).filter(function (row) { return fv(row.value, '履歴結果', '') || fv(row.value, '履歴メモ', ''); });
+    if (rows.length || fv(lead, '担当者氏名', '')) return kintone.Promise.resolve(true);
+    return api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, query: 'ネタNo = "' + lead.$id.value + '" limit 1', fields: ['$id'] })
+      .then(function (r) { return r.records.length > 0; }).catch(function () { return false; });
+  }
+
+  function leadUrl(id) { return IS_MOBILE ? '/k/m/' + LEAD_APP_ID + '/show?record=' + id : '/k/' + LEAD_APP_ID + '/show#record=' + id; }
+  function custUrl(id) { return IS_MOBILE ? '/k/m/' + CUSTOMER_APP_ID + '/show?record=' + id : '/k/' + CUSTOMER_APP_ID + '/show#record=' + id; }
+
+  function openQuickRegister() {
+    var props = {};
+    var bg = el('div', { className: 'chub-bg' });
+    var m = el('div', { className: 'chub-modal', style: 'max-width:520px' });
+    m.innerHTML = '<h3>📞 Googleマップから電話先を登録</h3>' +
+      '<div class="chub-sub">Googleマップでお店を開き、店名〜電話番号の部分をコピー(スマホは「共有」→コピー)して貼り付けると読み取ります。手で入れてもかまいません。</div>' +
+      '<textarea class="q-paste" placeholder="ここに貼り付け" style="min-height:64px"></textarea>' +
+      '<label>会社名・店名(必須)</label><input type="text" class="q-name">' +
+      '<div class="chub-row2"><div><label>電話番号</label><input type="tel" class="q-phone"></div><div><label>大分類</label><select class="q-cat"></select></div></div>' +
+      '<div class="chub-row2"><div><label>〒</label><input type="text" class="q-zip"></div><div><label>都道府県</label><select class="q-pref"></select></div></div>' +
+      '<label>住所</label><input type="text" class="q-addr">' +
+      '<label>GoogleマップのURL(あれば)</label><input type="url" class="q-url">' +
+      '<div class="q-dup"></div><div class="q-call"></div>' +
+      '<div class="chub-btns"><button type="button" class="q-cancel">キャンセル</button><button type="button" class="primary q-save">登録して記録</button></div>';
+    bg.appendChild(m);
+    document.body.appendChild(bg);
+    var $ = function (c) { return m.querySelector(c); };
+    var form = null, hasNextField = true;
+    var lead = null, leadBlocked = false, custHit = null;
+
+    api('/k/v1/app/form/fields', 'GET', { app: CUSTOMER_APP_ID }).then(function (r) {
+      props = r.properties;
+      hasNextField = !!props['次回連絡日'];
+      [['q-cat', '大分類', ''], ['q-pref', '都道府県', '北海道']].forEach(function (x) {
+        var sel = $('.' + x[0]);
+        if (x[1] === '大分類') sel.appendChild(el('option', { value: '' }, '(未選択)'));
+        optionsOf(props, x[1], x[1] === '都道府県' ? ['北海道'] : []).forEach(function (v) {
+          var o = el('option', { value: v }, esc(v)); if (v === x[2]) o.selected = true; sel.appendChild(o);
+        });
+      });
+    }).catch(function () { $('.q-pref').appendChild(el('option', { value: '北海道' }, '北海道')); }).then(function () {
+      return api('/k/v1/app/form/fields', 'GET', { app: DEAL_APP_ID }).then(function (r) { return r.properties; }).catch(function () { return {}; });
+    }).then(function (dealProps) {
+      form = buildCallForm({ open: [], dealProps: dealProps, hasNextField: hasNextField, nextValue: '' });
+      $('.q-call').appendChild(form.el);
+    });
+
+    function fillIfEmpty(cls, v) { if (v && !$(cls).value) $(cls).value = v; }
+    function applyParsed() {
+      var p = parseMapsText($('.q-paste').value);
+      ['.q-name', '.q-phone', '.q-zip', '.q-addr', '.q-url'].forEach(function (c) { $(c).value = ''; });
+      fillIfEmpty('.q-name', p.name); fillIfEmpty('.q-phone', p.phone); fillIfEmpty('.q-zip', p.zip);
+      fillIfEmpty('.q-addr', p.addr); fillIfEmpty('.q-url', p.url);
+      if (p.pref) $('.q-pref').value = p.pref;
+      checkDup();
+    }
+    $('.q-paste').addEventListener('input', applyParsed);
+
+    var dupTimer = null, dupSeq = 0;
+    function checkDup() {
+      clearTimeout(dupTimer);
+      dupTimer = setTimeout(runDup, 400);
+    }
+    function runDup() {
+      var name = $('.q-name').value.trim(), phone = $('.q-phone').value.trim();
+      var seq = ++dupSeq;
+      lead = null; leadBlocked = false; custHit = null;
+      var box = $('.q-dup');
+      if (!name && digits(phone).length < 9) { box.innerHTML = ''; return kintone.Promise.resolve(); }
+      return kintone.Promise.all([findSame(CUSTOMER_APP_ID, name, phone), findSame(LEAD_APP_ID, name, phone)]).then(function (res) {
+        if (seq !== dupSeq) return null;
+        if (res[0].length) {
+          custHit = res[0][0];
+          box.innerHTML = '<div class="chub-apo" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c">顧客管理に同じお店があります: <a href="' + custUrl(custHit.$id.value) + '">No.' + esc(custHit.$id.value) + ' ' + esc(fv(custHit, '会社名', '')) + '</a><br>そちらを開いて「📞 電話を記録」で記録してください。</div>';
+          return null;
+        }
+        if (!res[1].length) { box.innerHTML = ''; return null; }
+        lead = res[1][0];
+        return leadHasHistory(lead).then(function (has) {
+          if (seq !== dupSeq) return;
+          leadBlocked = has;
+          box.innerHTML = has
+            ? '<div class="chub-apo" style="border-color:#fcd34d;background:#fffbeb;color:#92400e">ネタリストに同じお店があり、架電履歴・担当者・予定が付いています: <a href="' + leadUrl(lead.$id.value) + '">ネタNo.' + esc(lead.$id.value) + '</a><br>ネタリストの画面の「顧客管理へ登録」で履歴ごと移してから、顧客管理で記録してください。</div>'
+            : '<div class="chub-apo">ネタリストに同じお店があります(<a href="' + leadUrl(lead.$id.value) + '">ネタNo.' + esc(lead.$id.value) + '</a>)。登録すると顧客管理へ<b>移します</b>(空欄はネタの内容で埋め、ネタ側は削除)。</div>';
+        });
+      });
+    }
+    $('.q-name').addEventListener('input', checkDup);
+    $('.q-phone').addEventListener('input', checkDup);
+
+    function close() { if (bg.parentNode) document.body.removeChild(bg); }
+    $('.q-cancel').addEventListener('click', close);
+    $('.q-save').addEventListener('click', function () {
+      var btn = this;
+      var name = $('.q-name').value.trim();
+      if (!name) { alert('会社名・店名を入れてください'); return; }
+      if (!form) return;
+      var call = form.read();
+      if (!call) return;
+      btn.disabled = true;
+      var msgs = [];
+      var newId = null;
+      clearTimeout(dupTimer);
+      runDup().then(function () {
+        if (custHit) throw new Error('顧客管理に同じお店があります(No.' + custHit.$id.value + ')。そちらで記録してください。');
+        if (lead && leadBlocked) throw new Error('ネタリストのネタNo.' + lead.$id.value + 'から「顧客管理へ登録」で移してください。');
+        var rec = {
+          会社名: { value: name }, 顧客ランク: { value: 'D' },
+          顧客情報メモ欄: { value: '架電で登録(Googleマップから' + (lead ? '・ネタNo.' + lead.$id.value + 'より移動' : '') + ')。顧客ランクは仮置きのD。' }
+        };
+        var vals = {
+          電話番号: $('.q-phone').value.trim() || (lead ? fv(lead, '電話番号', '') : ''),
+          郵便番号: $('.q-zip').value.trim() || (lead ? fv(lead, '郵便番号', '') : ''),
+          都道府県: $('.q-pref').value,
+          住所: toWideAddr($('.q-addr').value.trim()) || (lead ? fv(lead, '市区町村', '') + fv(lead, '丁目番地等', '') : ''),
+          大分類: $('.q-cat').value || (lead ? fv(lead, '大分類', '') : ''),
+          GoogleマップURL: $('.q-url').value.trim()
+        };
+        if (lead) ['中分類', '業種メモ', '営業時間', '定休日', '緯度', '経度'].forEach(function (k) { vals[k] = fv(lead, k, ''); });
+        if (hasNextField && call.next) vals.次回連絡日 = call.next;
+        Object.keys(vals).forEach(function (k) { if (vals[k] !== '' && (props[k] || !Object.keys(props).length)) rec[k] = { value: vals[k] }; });
+        return api('/k/v1/record', 'POST', { app: CUSTOMER_APP_ID, record: rec });
+      }).then(function (resp) {
+        newId = resp.id;
+        msgs.push('顧客管理に登録しました(No.' + newId + ')。');
+        call.custNo = newId;
+        call.company = name;
+        call.hasNextField = false; // 次回連絡日は登録時に入れた
+        return recordCall(call, msgs);
+      }).then(function () {
+        if (!lead) return null;
+        return api('/k/v1/records', 'DELETE', { app: LEAD_APP_ID, ids: [lead.$id.value] }).then(function () {
+          msgs.push('ネタリストのネタNo.' + lead.$id.value + 'は顧客管理へ移したので削除しました。');
+        }).catch(function () {
+          msgs.push('ネタリストのネタNo.' + lead.$id.value + 'は削除できなかったので、メモに印を付けました。');
+          return api('/k/v1/record', 'PUT', { app: LEAD_APP_ID, id: lead.$id.value, record: {
+            メモ: { value: (fv(lead, 'メモ', '') ? fv(lead, 'メモ', '') + '\n' : '') + '顧客管理No.' + newId + 'へ登録済み(' + ymd(new Date()) + ')' } } }).catch(function () { return null; });
+        });
+      }).then(function () {
+        close();
+        alert('登録しました。\n' + msgs.join('\n'));
+        location.href = custUrl(newId);
+      }).catch(function (err) {
+        btn.disabled = false;
+        alert((newId ? '途中で止まりました。' : '登録できませんでした。') + (msgs.length ? '\n(ここまでは済んでいます: ' + msgs.join(' ') + ')' : '') + (err && err.message ? '\n' + err.message : ''));
+        if (newId) location.href = custUrl(newId);
+      });
+    });
+  }
+
+  kintone.events.on(['app.record.index.show', 'mobile.app.record.index.show'], function (event) {
+    IS_MOBILE = event.type.indexOf('mobile.') === 0;
+    if (Number(event.appId) !== CUSTOMER_APP_ID) return event;
+    injectStyle();
+    var old = document.getElementById('chub-quick');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.getHeaderMenuSpaceElement();
+    if (!space) return event;
+    var b = el('button', { type: 'button', id: 'chub-quick' }, '📞 Googleマップから電話先を登録');
+    b.style.cssText = 'padding:6px 14px;border-radius:4px;border:1px solid #2563eb;background:#2563eb;color:#fff;cursor:pointer;font-size:13px;margin-right:8px;' +
+      (IS_MOBILE ? 'display:block;width:calc(100% - 24px);margin:8px 12px;padding:12px 14px;font-size:15px;' : '');
+    b.addEventListener('click', openQuickRegister);
+    if (IS_MOBILE) space.appendChild(b); else space.insertBefore(b, space.firstChild);
+    return event;
+  });
+
+  // ---------- 表示 ----------
+  function placeRoot() {
+    var old = document.getElementById(ROOT_ID);
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var space = null;
+    try {
+      space = IS_MOBILE ? kintone.mobile.app.record.getSpaceElement(SPACE_ID) : kintone.app.record.getSpaceElement(SPACE_ID);
+    } catch (e) { space = null; }
+    if (!space) space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.record.getHeaderMenuSpaceElement();
+    if (!space) return null;
+    var root = el('div', { id: ROOT_ID });
+    space.appendChild(root);
+    return root;
+  }
+
+  kintone.events.on(['app.record.detail.show', 'mobile.app.record.detail.show'], function (event) {
+    IS_MOBILE = event.type.indexOf('mobile.') === 0;
+    if (Number(event.appId) !== CUSTOMER_APP_ID) return event;
+    injectStyle();
+    var root = placeRoot();
+    if (!root) return event;
+    root.innerHTML = '<div class="chub-muted">読み込み中…</div>';
+    var r = event.record;
+    var custNo = fv(r, '顧客No', '') || event.recordId;
+    loadAll(custNo).then(function (data) {
+      render(root, { record: r, data: data });
+    }).catch(function () {
+      root.innerHTML = '<div class="chub-muted">作業パネルを読み込めませんでした。</div>';
+    });
+    return event;
+  });
+})();

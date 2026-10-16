@@ -12,6 +12,7 @@
  * - ネタリスト: 「📞 架電を記録」「🚶 飛び込みを記録」で、結果・メモ・次回架電予定日だけの小さな画面から架電履歴に1行足して保存する
  *   (2026-10-11: 電話/飛び込みの区別と時刻も残す。毎朝の架電・飛び込みリストの点数とおすすめ時間帯の学習に使う)
  *   (日付=今日・担当=自分。獲得ならアポ獲得者が空のとき自分を入れ、続けてアポをスケジュールに登録するか聞く)。
+ * - 案件管理の「コール業務」は入力できなくする(2026-10-16 使用終了。電話の結果は顧客管理の作業パネルから活動履歴へ)。
  */
 (function () {
   'use strict';
@@ -139,6 +140,8 @@
     'mobile.app.record.create.show', 'mobile.app.record.edit.show'], function (event) {
     if (Number(event.appId) !== DEAL_APP_ID) return event;
     prevNext = event.type.indexOf('edit') >= 0 ? fv(event.record, '次回商談日', '') : '';
+    // 「コール業務」は使用終了(2026-10-16)。電話の結果は顧客管理の「📞 電話を記録」で活動履歴に残す。過去の値は見られるよう残す
+    if (event.record['コール業務']) event.record['コール業務'].disabled = true;
     return event;
   });
 
