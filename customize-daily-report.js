@@ -9,8 +9,9 @@
  *    予定の無い商談(顧客管理の「🚶 訪問を記録」、2026-10-17〜)は訪問件数にも数える(作成時刻で午前/午後)。
  *    予定から作った記録([スケジュールNo.X から作成])・予定の活動履歴Noに紐付いた記録は予定の側で数える
  * 2. 案件管理(app19): 作成者 or 更新者=報告者 かつ 更新日時がその日
- *    商談フェーズ 受注→受注(金額=売上) / その日新規登録→見込み / それ以外→その他
- *    受注は、別の日報で同じ案件の受注を報告済みなら「その他」にして二重計上しない
+ *    取り込むのは その日新規登録(失注以外)→見込み と 受注→受注(金額=売上) だけ(2026-10-20)。
+ *    それ以外の更新(管理者の一括修正・軽い編集も拾っていた)は取り込まない。商談の中身は活動履歴・予定から入る。
+ *    受注は、別の日報で同じ案件の受注を報告済みなら取り込まない(二重計上しない)
  * 3. ネタリスト(app29):
  *    a. 架電履歴の行のうち 日付=日付 かつ 担当=報告者
  *       結果 獲得→アポ獲得 / ネタ→見込み / それ以外→架電(種別が飛び込みなら訪問)
@@ -28,6 +29,14 @@
  * (ルックアップのコピー先にすると会社名を手入力できなくなり、案件の無いネタの行で困るため)
  *
  * スマホの一覧: 全列150px固定で日付と報告者だけで画面が埋まるため、列幅を中身に合わせて詰める
+ *
+ * 時間帯(2026-10-20): 活動履歴=作成した時刻(予定に紐付いた記録は予定の開始時刻)、案件=登録/更新の時刻、
+ *   ネタリスト=架電履歴の時刻、予定=開始時刻で午前/午後を入れる(以前は活動履歴の行に時間帯が入らなかった)
+ *
+ * 押さなくても取り込む(2026-10-20。ボタンを押さずに保存する日が多く、記録の4割近くが日報に入っていなかったため):
+ *   - 新しく日報を作る画面を開いたら、その日の分をすべて自動で取り込む(結果はボタンの下に表示)
+ *   - 保存するときは、画面を開いた後(または最後に取り込んだ後)に新しく入った記録だけを足す。
+ *     開いた時点の記録は足さない(利用者がわざと消した行が保存のたびに戻らないように)
  *
  * 二重取り込み防止: 内容の先頭に [履歴No.X] [案件No.X] [ネタNo.X-行ID] [ネタ新規] [予定No.X] の印を付け、既にある印はスキップする
  * 1社1行: 同じ会社(表記ゆれ・空白を無視)か同じ案件No.の行が既にあれば、新しい行は作らずその行にまとめる。
@@ -73,6 +82,12 @@
     if (!iso) return false;
     var d = new Date(iso);
     return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) === dateStr;
+  }
+
+  // 日時(UTC文字列)を日本時間の午前/午後に
+  function ampm(iso) {
+    if (!iso) return null;
+    return new Date(iso).getHours() < 12 ? '午前' : '午後';
   }
 
   function shorten(s, len) {
@@ -143,7 +158,7 @@
         if (body) memo += (memo ? '：' : '') + body;
         var fromSched = body.match(/スケジュールNo\.(\d+) から作成/);
         // 予定の無い訪問(顧客管理の「🚶 訪問を記録」)は、作成した時刻で午前/午後の訪問件数に数える。
-        // 予定から作った記録・予定に紐付けた記録は予定の側で数えるので除く(importAll で紐付けを見て外す)
+        // 予定から作った記録・予定に紐付けた記録は予定の側で数えるので除く(apply で紐付けを見て外す)
         var created = new Date(fv(a, '作成日時', ''));
         var visitAt = t.indexOf('商談') === 0 && !fromSched && date >= VISIT_COUNT_FROM ? (created.getHours() < 12 ? '午前' : '午後') : null;
         return {
@@ -151,7 +166,7 @@
           alt: fromSched ? '[予定No.' + fromSched[1] + ']' : null,
           actId: String(a.$id.value), visitAt: visitAt,
           call: t === '電話',
-          row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''),
+          row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''), time: ampm(fv(a, '作成日時', '')),
             memo: '[履歴No.' + a.$id.value + '] 活動履歴(' + t + ') ' + shorten(memo, 180) }
         };
       });
@@ -174,24 +189,21 @@
         var isNew = isOnDate(fv(d, '作成日時', ''), date);
         var detail = (isNew ? '新規登録' : '更新') + ' フェーズ:' + (phase || '-') +
           (fv(d, '提案商品', '') ? ' 商品:' + fv(d, '提案商品', '') : '');
-        var base = { company: fv(d, '会社名', ''), dealNo: no };
+        var base = { company: fv(d, '会社名', ''), dealNo: no, time: ampm(fv(d, isNew ? '作成日時' : '更新日時', '')) };
         if (phase === '受注') {
           return alreadyReportedWon(no, selfId).then(function (reported) {
-            if (reported) {
-              base.kubun = 'その他';
-              base.memo = '[案件No.' + no + '] ' + detail + '(受注は別の日報で報告済み)';
-            } else {
-              base.kubun = '受注';
-              base.amount = fv(d, '売上', '');
-              base.memo = '[案件No.' + no + ' 受注] ' + detail;
-            }
-            return { mark: '[案件No.' + no + (base.kubun === '受注' ? ' 受注]' : ']'), alt: '[案件No.' + no + ' 受注]', row: base };
+            if (reported) return null; // 別の日報で報告済み
+            base.kubun = '受注';
+            base.amount = fv(d, '売上', '');
+            base.memo = '[案件No.' + no + ' 受注] ' + detail;
+            return { mark: '[案件No.' + no + ' 受注]', row: base };
           });
         }
-        base.kubun = isNew && phase !== '失注' ? '見込み' : 'その他';
+        if (!isNew || phase === '失注') return null; // 新規以外の更新は取り込まない(2026-10-20)
+        base.kubun = '見込み';
         base.memo = '[案件No.' + no + '] ' + detail;
         return { mark: '[案件No.' + no + ']', alt: '[案件No.' + no + ' 受注]', row: base };
-      }));
+      })).then(function (items) { return items.filter(Boolean); });
     });
   }
 
@@ -214,7 +226,8 @@
           var walk = fv(v, '履歴種別', '') === '飛び込み';
           var kubun = result === '獲得' ? 'アポ獲得' : (result === 'ネタ' ? '見込み' : (walk ? '訪問' : '架電'));
           var mark = '[ネタNo.' + l.$id.value + '-' + r.id + ']';
-          var item = { mark: mark, call: !walk, row: { kubun: kubun, company: fv(l, '会社名', ''),
+          var hh = fv(v, '履歴時刻', '');
+          var item = { mark: mark, call: !walk, row: { kubun: kubun, company: fv(l, '会社名', ''), time: hh ? (Number(hh.split(':')[0]) < 12 ? '午前' : '午後') : null,
             memo: mark + ' ネタリスト' + (walk ? '飛び込み' : '架電') + ' 結果:' + (result || '-') + (fv(v, '履歴メモ', '') ? ' ' + shorten(fv(v, '履歴メモ', ''), 120) : '') } };
           if (walk) {
             item.walk = Number((fv(v, '履歴時刻', '') || '00').split(':')[0]) < 12 ? '午前' : '午後';
@@ -263,14 +276,17 @@
     var tomorrow = nextBusinessDay(date);
     var tq = dayRangeQuery(codes, tomorrow) + ' order by 開始日時 asc';
     return Promise.all([getAll(APP.schedule, q), getAll(APP.schedule, tq)]).then(function (res) {
-      var out = { items: [], am: 0, pm: 0, plan: '', ok: true, linked: [] };
+      var out = { items: [], am: 0, pm: 0, plan: '', ok: true, linked: [], linkedTime: {} };
       res[0].forEach(function (r) {
         var s = new Date(fv(r, '開始日時', ''));
         var time = s.getHours() < 12 ? '午前' : '午後';
         var st = fv(r, '実施状況', '予定');
         var visit = fv(r, '種類', '') === '訪問' && st !== '中止';
         if (visit) { if (time === '午前') out.am++; else out.pm++; }
-        if (fv(r, '活動履歴No', '')) out.linked.push(String(fv(r, '活動履歴No', '')));
+        if (fv(r, '活動履歴No', '')) {
+          out.linked.push(String(fv(r, '活動履歴No', '')));
+          out.linkedTime[String(fv(r, '活動履歴No', ''))] = time;
+        }
         if (fv(r, '活動履歴No', '')) return; // 活動履歴の行で取り込む
         var id = r.$id.value;
         var mark = '[予定No.' + id + ']';
@@ -293,114 +309,175 @@
       return out;
     }).catch(function (e) {
       console.warn('スケジュールを取り込めませんでした', e);
-      return { items: [], am: 0, pm: 0, plan: '', ok: false, linked: [] };
+      return { items: [], am: 0, pm: 0, plan: '', ok: false, linked: [], linkedTime: {} };
     });
   }
 
-  function importAll() {
-    var rec = recApi().get().record;
-    var date = fv(rec, '日付', '');
-    var users = fv(rec, '報告者', []);
-    if (!date || !users.length) {
-      window.alert('日付と報告者を入力してから押してください。');
-      return;
-    }
-    var userCodes = users.map(function (u) { return u.code; });
+  // 4アプリからその日の記録を集める。戻り値 {res: [活動履歴, 案件, ネタリスト, 予定の各items], sched}
+  function collect(date, userCodes, selfId) {
     var codes = userCodes.map(function (c) { return '"' + c + '"'; }).join(',');
-    var selfId = recApi().getId();
-
-    Promise.all([
+    return Promise.all([
       fromActivities(codes, date),
       fromDeals(codes, date, selfId),
       fromLeads(userCodes, codes, date),
       fromSchedule(codes, date)
     ]).then(function (all) {
       var sched = all[3];
-      var res = [all[0], all[1], all[2], sched.items];
-      // 架電件数・飛び込みの訪問は、取り込み済みかに関係なく、その日の全件から数える
-      var calls = 0, walkAm = 0, walkPm = 0;
-      res.forEach(function (items) {
-        items.forEach(function (it) {
-          if (it.call) calls++;
-          var w = it.walk || (it.visitAt && sched.linked.indexOf(it.actId) < 0 ? it.visitAt : null);
-          if (w === '午前') walkAm++;
-          if (w === '午後') walkPm++;
-        });
+      // 予定から作った・予定に紐付いた活動履歴は、予定の開始時刻で午前/午後
+      all[0].forEach(function (it) {
+        if (sched.linkedTime[it.actId]) it.row.time = sched.linkedTime[it.actId];
       });
-      var latest = recApi().get();
-      var rows = fv(latest.record, TABLE, []).filter(function (r) { return !isBlankRow(r); });
-      var existing = rows.map(function (r) { return fv(r.value, '内容', ''); }).join('\n');
-      var counts = [0, 0, 0, 0];
-      var merged = 0;
-      var byKey = {};
-      function register(row) {
-        rowKeys(fv(row.value, '明細_会社名', ''), fv(row.value, '明細_案件No', '')).forEach(function (k) {
-          if (!byKey[k]) byKey[k] = row;
-        });
-      }
-      rows.forEach(register);
-      res.forEach(function (items, i) {
-        items.forEach(function (it) {
-          if (existing.indexOf(it.mark) !== -1 || (it.alt && existing.indexOf(it.alt) !== -1)) return;
-          var target = null;
-          rowKeys(it.row.company, it.row.dealNo).some(function (k) { target = byKey[k]; return !!target; });
-          if (target) {
-            mergeInto(target, it.row);
-            merged++;
-          } else {
-            target = makeRow(it.row);
-            rows.push(target);
-          }
-          register(target);
-          existing += '\n' + it.mark;
-          counts[i]++;
-        });
+      return { res: [all[0], all[1], all[2], sched.items], sched: sched };
+    });
+  }
+
+  // 集めた記録を日報のレコードに当てはめる。only: 足してよい記録の判定(省略で全部)
+  function apply(record, data, only) {
+    var res = data.res, sched = data.sched;
+    // 架電件数・飛び込みの訪問は、取り込み済みかに関係なく、その日の全件から数える
+    var calls = 0, walkAm = 0, walkPm = 0;
+    res.forEach(function (items) {
+      items.forEach(function (it) {
+        if (it.call) calls++;
+        var w = it.walk || (it.visitAt && sched.linked.indexOf(it.actId) < 0 ? it.visitAt : null);
+        if (w === '午前') walkAm++;
+        if (w === '午後') walkPm++;
       });
-      var total = counts[0] + counts[1] + counts[2] + counts[3];
-      // 訪問件数(予定+飛び込み)・架電件数: 数えた方が手入力より多いときだけ上書き
-      var visitChanged = false;
-      [['訪問_午前', sched.am + walkAm], ['訪問_午後', sched.pm + walkPm]].forEach(function (v) {
-        var cur = Number(fv(latest.record, v[0], 0)) || 0;
-        if (v[1] > cur) { latest.record[v[0]].value = String(v[1]); visitChanged = true; }
+    });
+    var rows = fv(record, TABLE, []).filter(function (r) { return !isBlankRow(r); });
+    var existing = rows.map(function (r) { return fv(r.value, '内容', ''); }).join('\n');
+    var counts = [0, 0, 0, 0];
+    var merged = 0;
+    var byKey = {};
+    function register(row) {
+      rowKeys(fv(row.value, '明細_会社名', ''), fv(row.value, '明細_案件No', '')).forEach(function (k) {
+        if (!byKey[k]) byKey[k] = row;
       });
-      var callChanged = false;
-      if (latest.record['架電件数'] && calls > (Number(fv(latest.record, '架電件数', 0)) || 0)) {
-        latest.record['架電件数'].value = String(calls);
-        callChanged = true;
-      }
-      var goal = fv(latest.record, '明日の目標', '');
-      var planAdded = false;
-      if (sched.plan && goal.indexOf('【翌営業日の予定') < 0) {
-        latest.record['明日の目標'].value = (goal ? goal + '\n\n' : '') + sched.plan;
-        planAdded = true;
-      }
-      if (!total && !visitChanged && !callChanged && !planAdded) {
-        window.alert('取り込める新しい情報はありませんでした。\n(活動履歴・案件管理・ネタリスト・スケジュールに、この日・この報告者の入力が無いか、すべて取り込み済みです)' +
-          (sched.ok ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした'));
+    }
+    rows.forEach(register);
+    res.forEach(function (items, i) {
+      items.forEach(function (it) {
+        if (existing.indexOf(it.mark) !== -1 || (it.alt && existing.indexOf(it.alt) !== -1)) return;
+        if (only && !only(it)) return;
+        var target = null;
+        rowKeys(it.row.company, it.row.dealNo).some(function (k) { target = byKey[k]; return !!target; });
+        if (target) {
+          mergeInto(target, it.row);
+          merged++;
+        } else {
+          target = makeRow(it.row);
+          rows.push(target);
+        }
+        register(target);
+        existing += '\n' + it.mark;
+        counts[i]++;
+      });
+    });
+    var out = { counts: counts, total: counts[0] + counts[1] + counts[2] + counts[3], merged: merged };
+    // 訪問件数(予定+飛び込み)・架電件数: 数えた方が手入力より多いときだけ上書き
+    out.visit = [sched.am + walkAm, sched.pm + walkPm];
+    out.visitChanged = false;
+    [['訪問_午前', out.visit[0]], ['訪問_午後', out.visit[1]]].forEach(function (v) {
+      var cur = Number(fv(record, v[0], 0)) || 0;
+      if (v[1] > cur) { record[v[0]].value = String(v[1]); out.visitChanged = true; }
+    });
+    out.calls = calls;
+    out.callChanged = false;
+    if (record['架電件数'] && calls > (Number(fv(record, '架電件数', 0)) || 0)) {
+      record['架電件数'].value = String(calls);
+      out.callChanged = true;
+    }
+    var goal = fv(record, '明日の目標', '');
+    out.planAdded = false;
+    if (sched.plan && goal.indexOf('【翌営業日の予定') < 0) {
+      record['明日の目標'].value = (goal ? goal + '\n\n' : '') + sched.plan;
+      out.planAdded = true;
+    }
+    if (out.total) record[TABLE].value = rows;
+    out.changed = !!(out.total || out.visitChanged || out.callChanged || out.planAdded);
+    out.schedOk = sched.ok;
+    return out;
+  }
+
+  // この画面で一度見た記録の印(保存時は、これ以外=画面を開いた後に入った記録だけを足す)
+  var seen = null;
+  function remember(data) {
+    seen = seen || {};
+    data.res.forEach(function (items) { items.forEach(function (it) { seen[it.mark] = true; if (it.alt) seen[it.alt] = true; }); });
+  }
+  function target(record) {
+    var date = fv(record, '日付', '');
+    var users = fv(record, '報告者', []);
+    return date && users.length ? { date: date, userCodes: users.map(function (u) { return u.code; }) } : null;
+  }
+  function summary(o) {
+    return '活動履歴 ' + o.counts[0] + '件 / 案件管理 ' + o.counts[1] + '件 / ネタリスト ' + o.counts[2] + '件 / スケジュール ' + o.counts[3] + '件' +
+      (o.merged ? '\n(うち ' + o.merged + '件は、同じ会社の行にまとめました)' : '') +
+      (o.visitChanged ? '\n訪問件数を予定・予定外の訪問から入れました(午前' + o.visit[0] + '・午後' + o.visit[1] + ')' : '') +
+      (o.callChanged ? '\n架電件数を入れました(' + o.calls + '件)' : '') +
+      (o.planAdded ? '\n翌営業日の予定を「明日の目標」に追記しました' : '') +
+      (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした');
+  }
+  // ボタンの下に結果を出す(自動取り込みでは確認ダイアログを出さない)
+  function notice(text) {
+    var btn = document.getElementById(BUTTON_ID);
+    if (!btn || !btn.parentNode) return;
+    var old = document.getElementById(BUTTON_ID + '-note');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var n = document.createElement('div');
+    n.id = BUTTON_ID + '-note';
+    n.style.cssText = 'margin:0 12px 8px;padding:6px 10px;border-left:4px solid #3498db;background:#f4f9fd;font-size:13px;white-space:pre-wrap;color:#334155';
+    n.textContent = text;
+    btn.parentNode.insertBefore(n, btn.nextSibling);
+  }
+
+  // ボタン(manual=true)と、新しい日報を開いたときの自動取り込み(manual=false)
+  function importNow(manual) {
+    var t = target(recApi().get().record);
+    if (!t) {
+      if (manual) window.alert('日付と報告者を入力してから押してください。');
+      return;
+    }
+    collect(t.date, t.userCodes, recApi().getId()).then(function (data) {
+      remember(data);
+      var latest = recApi().get(); // 取り込み中に入力された内容を消さないよう、最新を取り直してから当てはめる
+      var o = apply(latest.record, data);
+      if (!o.changed) {
+        if (manual) {
+          window.alert('取り込める新しい情報はありませんでした。\n(活動履歴・案件管理・ネタリスト・スケジュールに、この日・この報告者の入力が無いか、すべて取り込み済みです)' +
+            (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした'));
+        } else {
+          notice('この日の活動(活動履歴・案件・ネタリスト・予定)はまだありません。保存するときに、それまでに入った分を自動で取り込みます。');
+        }
         return;
       }
-      latest.record[TABLE].value = rows;
       recApi().set(latest);
-      window.alert('取り込みました:\n活動履歴 ' + counts[0] + '件 / 案件管理 ' + counts[1] + '件 / ネタリスト ' + counts[2] +
-        '件 / スケジュール ' + counts[3] + '件' +
-        (merged ? '\n(うち ' + merged + '件は、同じ会社の行にまとめました)' : '') +
-        (visitChanged ? '\n訪問件数を予定・予定外の訪問から入れました(午前' + (sched.am + walkAm) + '・午後' + (sched.pm + walkPm) + ')' : '') +
-        (callChanged ? '\n架電件数を入れました(' + calls + '件)' : '') +
-        (planAdded ? '\n翌営業日の予定を「明日の目標」に追記しました' : '') +
-        (sched.ok ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした') +
-        '\n\n時間帯・区分・金額を確認し、上の「今日の数字」も見直してから保存してください。');
+      var msg = summary(o) + '\n\n時間帯・区分・金額を確認し、上の「今日の数字」も見直してから保存してください。';
+      if (manual) window.alert('取り込みました:\n' + msg);
+      else notice('今日の活動を自動で取り込みました:\n' + msg);
     }).catch(function (e) {
       console.error(e);
-      window.alert('取り込みに失敗しました。時間をおいて再度お試しください。');
+      if (manual) window.alert('取り込みに失敗しました。時間をおいて再度お試しください。');
+      else notice('今日の活動の自動取り込みに失敗しました。上のボタンでもう一度取り込んでください。');
     });
+  }
+
+  // 編集画面を開いたとき: 足さずに、今ある記録の印だけ覚える(保存時に、後から入った分だけ足すため)
+  function rememberOnly() {
+    var t = target(recApi().get().record);
+    if (!t) return;
+    collect(t.date, t.userCodes, recApi().getId()).then(remember).catch(function () { /* 読めなければ保存時は何もしない(seen は空のまま) */ });
   }
 
   kintone.events.on(['app.record.create.show', 'app.record.edit.show',
     'mobile.app.record.create.show', 'mobile.app.record.edit.show'], function (event) {
     detectEnv(event);
+    seen = null;
     // スマホは画面遷移しても前のボタンが残ることがあるため作り直す
     var old = document.getElementById(BUTTON_ID);
     if (old && old.parentNode) old.parentNode.removeChild(old);
+    var oldNote = document.getElementById(BUTTON_ID + '-note');
+    if (oldNote && oldNote.parentNode) oldNote.parentNode.removeChild(oldNote);
     var space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.record.getHeaderMenuSpaceElement();
     if (space) {
       var btn = document.createElement('button');
@@ -409,10 +486,28 @@
       btn.textContent = '今日の活動を自動取り込み（活動履歴・案件・ネタリスト・予定）';
       btn.style.cssText = 'margin:8px 12px;padding:6px 14px;border:1px solid #3498db;background:#fff;color:#3498db;border-radius:4px;cursor:pointer;font-size:14px;' +
         (IS_MOBILE ? 'display:block;width:calc(100% - 24px);padding:10px 14px;' : '');
-      btn.addEventListener('click', importAll);
+      btn.addEventListener('click', function () { importNow(true); });
       space.appendChild(btn);
     }
+    // 新しい日報は開いたら自動で取り込む。編集は印だけ覚える(表示が終わってから動かす)
+    var isCreate = event.type.indexOf('create') >= 0;
+    setTimeout(function () { if (isCreate) importNow(false); else rememberOnly(); }, 0);
     return event;
+  });
+
+  // 保存するとき: 画面を開いた後(最後に取り込んだ後)に新しく入った記録だけを足す。失敗しても保存は止めない
+  kintone.events.on(['app.record.create.submit', 'app.record.edit.submit',
+    'mobile.app.record.create.submit', 'mobile.app.record.edit.submit'], function (event) {
+    detectEnv(event);
+    var t = target(event.record);
+    if (!t || !seen) return event; // まだ一度も記録を読めていない(読み込み失敗・すぐ保存)ときは何もしない
+    return collect(t.date, t.userCodes, event.recordId || null).then(function (data) {
+      apply(event.record, data, function (it) { return !seen[it.mark] && !(it.alt && seen[it.alt]); });
+      return event;
+    }).catch(function (e) {
+      console.warn('保存時の取り込みに失敗しました(保存は続けます)', e);
+      return event;
+    });
   });
 
   // ---------- 明細の案件No. → 会社名 ----------
