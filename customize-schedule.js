@@ -1473,6 +1473,12 @@
           };
           phase = sel('商談フェーズ');
           kakudo = sel('確度');
+          // 確度が空の案件では先頭(100%)が勝手に選ばれないよう、空の選択肢を足して選ばせる(2026-10-20)
+          if (!fv(deal, '確度', '')) {
+            var none = el('option', { value: '' }, '(選んでください)');
+            kakudo.insertBefore(none, kakudo.firstChild);
+            kakudo.value = '';
+          }
         }
         var btns = el('div', { className: 'btns' });
         var cancel = el('button', {}, 'キャンセル');
@@ -1486,6 +1492,11 @@
         cancel.addEventListener('click', function () { close(null); });
         ok.addEventListener('click', function () {
           if (!memo.value.trim()) { alert('報告を書いてください(一言でもかまいません)'); return; }
+          // 案件があるときは確度を必須に(2026-10-20)。// 失注・保留/中止にしたときは確度は要らない
+          if (kakudo && !kakudo.value && ['失注', '保留/中止'].indexOf(phase.value) < 0) {
+            alert('案件の「確度」を選んでください(商談の手応え。迷ったら低めで構いません)');
+            return;
+          }
           close({
             memo: memo.value.trim(),
             phase: phase && phase.value !== fv(deal, '商談フェーズ', '') ? phase.value : '',

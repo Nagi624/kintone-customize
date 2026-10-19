@@ -366,7 +366,8 @@
       '<div class="chub-apo" style="display:none"><b>🎉 アポ獲得 — 商談の予定</b>' +
       '<label>商談の日時</label><input type="datetime-local" class="c-apo-dt">' +
       '<label>商談に行く人(押すたびに選ぶ/外す。何人でも)</label><div class="chub-chips c-apo-users"></div>' +
-      '<label>提案商品</label><select class="c-apo-item"></select>' +
+      '<div class="chub-row2"><div><label>提案商品</label><select class="c-apo-item"></select></div>' +
+      '<div><label>確度</label><select class="c-apo-kakudo"></select></div></div>' +
       '<div class="chub-sub" style="margin:8px 0 0">' + (open.length ? '進行中の案件(' + esc(fv(open[0], '提案商品', '') || '商品未選択') + ')の次回商談日を更新します。' : '案件を新しく作り、') + 'あなたと商談に行く人の両方の予定表に入ります。</div></div>' +
       '<label>メモ(話した内容・相手の名前・かけ直す時間など)</label><textarea class="c-memo"></textarea>' +
       (opts.hasNextField ? '<label>次回連絡日(またかけるとき)</label><input type="date" class="c-next">' : '');
@@ -390,6 +391,14 @@
       if (v === (open.length ? fv(open[0], '提案商品', '') : 'MEO代行')) o.selected = true;
       itemSel.appendChild(o);
     });
+    // 確度(2026-10-20): アポの段階は低めの20%を初期値に。進行中の案件に確度があればそれ
+    var kakudoSel = w.querySelector('.c-apo-kakudo');
+    var curKakudo = open.length && fv(open[0], '確度', '') ? fv(open[0], '確度', '') : '20%';
+    optionsOf(opts.dealProps || {}, '確度', ['100%', '80%', '60%', '40%', '20%']).forEach(function (v) {
+      var o = el('option', { value: v }, esc(v));
+      if (v === curKakudo) o.selected = true;
+      kakudoSel.appendChild(o);
+    });
     var me = kintone.getLoginUser();
     // 最初は自分(アポを取った人)を選んでおく。訪問する人を足す
     var picker = userPicker(w.querySelector('.c-apo-users'), [{ code: me.code, name: me.name }]);
@@ -404,7 +413,7 @@
           open: open, chosen: chosen, memo: w.querySelector('.c-memo').value.trim(),
           next: opts.hasNextField ? w.querySelector('.c-next').value : '', prevNext: opts.nextValue || '', hasNextField: opts.hasNextField,
           apoDt: apoDt, apoUsers: picker.get(),
-          item: itemSel.value
+          item: itemSel.value, kakudo: kakudoSel.value
         };
       }
     };
@@ -443,7 +452,7 @@
   }
 
   // 電話1本の記録: アポ獲得なら案件を作る/更新して予定も入れ、活動履歴に1件、次回連絡日を更新する。
-  // p: {custNo, company, open(進行中の案件), chosen, memo, next, prevNext, hasNextField, apoDt, apoUsers, item}
+  // p: {custNo, company, open(進行中の案件), chosen, memo, next, prevNext, hasNextField, apoDt, apoUsers, item, kakudo}
   // msgs: 済んだことを順に足していく(途中で失敗したときに伝えるため)
   function recordCall(p, msgs) {
     var me = kintone.getLoginUser();
@@ -461,6 +470,7 @@
         var upd = { 次回商談日: { value: apoDt }, 商談担当者: { value: users(team) } };
         if (!fv(d, '商談フェーズ', '')) upd.商談フェーズ = { value: '商談予定' };
         if (!fv(d, '提案商品', '')) upd.提案商品 = { value: item };
+        if (p.kakudo && p.kakudo !== fv(d, '確度', '')) upd.確度 = { value: p.kakudo };
         if (!fv(d, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
         dealP = api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: d.$id.value, record: upd }).then(function () {
           msgs.push('案件(' + (fv(d, '提案商品', '') || item) + ')の次回商談日を ' + dtLabel(apoDt) + ' にしました。');
@@ -468,7 +478,7 @@
         }).then(function (m2) { if (m2) msgs.push(m2); return d.$id.value; });
       } else {
         var rec = {
-          会社名: { value: company }, 提案商品: { value: item }, 商談フェーズ: { value: '商談予定' },
+          会社名: { value: company }, 提案商品: { value: item }, 商談フェーズ: { value: '商談予定' }, 確度: { value: p.kakudo || '' },
           主担当: { value: [{ code: me.code }] }, 商談担当者: { value: users(team) }, アポ獲得者: { value: [{ code: me.code }] },
           初回商談日: { value: ymd(new Date(apoDt)) }, 次回商談日: { value: apoDt },
           詳細: { value: memo ? '(アポ獲得時のメモ)' + memo : '' }
@@ -598,6 +608,11 @@
       $('.v-save').addEventListener('click', function () {
         var memo = $('.v-memo').value.trim();
         if (!memo) { alert('報告を書いてください(一言でもかまいません)'); return; }
+        // 案件があるときは確度を必須に(2026-10-20)。// 失注・保留/中止にしたときは確度は要らない
+        if (dealOf(dealSel.value) && !$('.v-kakudo').value && ['失注', '保留/中止'].indexOf($('.v-phase').value) < 0) {
+          alert('案件の「確度」を選んでください(商談の手応え。迷ったら低めで構いません)');
+          return;
+        }
         var btn = this;
         btn.disabled = true;
         var plan = planSel ? planOf(planSel.value) : null;
