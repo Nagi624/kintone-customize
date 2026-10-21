@@ -21,6 +21,9 @@
  *   一覧「📞 今日の架電リスト」「🚶 今日の飛び込みリスト」で開くと、最初からそのリストを表示する。
  *   リストではピンに順位の番号(1〜10位=赤、〜25位=橙、それ以降=青)を付け、点数・理由・話のきっかけ・営業時間を出す。
  *   飛び込みリストでは今日の訪問予定を★、その周り1.2km(飛び込みの範囲)を円で出す
+ * - 【2026-10-22】架電リストは「📞 明日の架電リスト」に改名(次の営業日の訪問予定の周りの店にアポを取るリスト。lead_lists.py)。
+ *   架電リストでは次の営業日(土日祝を飛ばす。祝日はholidays-jp API、取れなければ土日だけ)の訪問予定を★と1.2kmの円で出し、
+ *   ポップアップの営業時間もその日の分を出す
  *
  * 利用ライブラリ: Leaflet.js (無料・APIキー不要、CDN経由で読み込み)
  */
@@ -65,10 +68,13 @@
   var APP_ID_SCHEDULE = 34;
   var APP_ID_CUSTOMER = 18;
   var WALK_RADIUS_M = 1200;  // 飛び込みリストの範囲(lead_lists.pyのWALK_RADIUS_KMと同じ)
-  // 表示の切り替え: すべて / 今日の架電リスト / 今日の飛び込みリスト
+  var APPO_RADIUS_M = 1200;  // 架電(アポ取り)の範囲(lead_lists.pyのAPPO_RADIUS_KMと同じ)
+  var HOLIDAY_API = "https://holidays-jp.github.io/api/v1/date.json";
+  // 表示の切り替え: すべて / 明日の架電リスト / 今日の飛び込みリスト
+  // 架電リストは毎朝、今日かけるために作られる(架電リスト日=今日)。中身は次の営業日の訪問予定の周りの店
   var MODES = {
     all: { label: "すべて", query: "" },
-    call: { label: "📞 今日の架電リスト", query: " and 架電リスト日 = TODAY()", view: "📞 今日の架電リスト" },
+    call: { label: "📞 明日の架電リスト", query: " and 架電リスト日 = TODAY()", view: "📞 明日の架電リスト" },
     walk: { label: "🚶 今日の飛び込みリスト", query: " and 飛び込みリスト日 = TODAY()", view: "🚶 今日の飛び込みリスト" },
   };
 
@@ -79,7 +85,8 @@
   var mode = "all";
   var currentView = "";
   var isMobileUi = false;
-  var todayVisits = [];
+  var todayVisits = [];  // ★を出す訪問予定(飛び込み=今日、架電=次の営業日)
+  var visitDay = new Date();
 
   function fv(record, code, fallback) {
     return record && record[code] && record[code].value != null ? record[code].value : fallback !== undefined ? fallback : "";
@@ -223,11 +230,35 @@
     return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
   }
 
-  // 今日の訪問予定と、その訪問先の位置(顧客管理・ネタリスト)
-  function fetchTodayVisits() {
-    var start = ymd(new Date()) + "T00:00:00+09:00";
-    var q = '種類 in ("訪問") and 実施状況 in ("予定") and 元予定No = "" and 開始日時 >= "' + start +
-      '" and 開始日時 < "' + ymd(new Date(Date.now() + 86400000)) + 'T00:00:00+09:00" order by 開始日時 asc limit 100';
+  // 次の営業日(土日・祝日を飛ばす)。祝日が取れなければ土日だけ飛ばす
+  function fetchNextBusinessDay() {
+    var next = function (holidays) {
+      var d = new Date();
+      d.setHours(0, 0, 0, 0);
+      do { d.setDate(d.getDate() + 1); } while (d.getDay() === 0 || d.getDay() === 6 || holidays[ymd(d)]);
+      return d;
+    };
+    return new kintone.Promise(function (resolve) {
+      var xhr = new XMLHttpRequest();
+      xhr.open("GET", HOLIDAY_API);
+      xhr.timeout = 5000;
+      xhr.onload = function () {
+        try { resolve(next(JSON.parse(xhr.responseText) || {})); } catch (e) { resolve(next({})); }
+      };
+      xhr.onerror = xhr.ontimeout = function () { resolve(next({})); };
+      xhr.send();
+    });
+  }
+
+  function dayLabel(d) {
+    return (d.getMonth() + 1) + "/" + d.getDate() + "(" + "日月火水木金土".charAt(d.getDay()) + ")";
+  }
+
+  // その日の訪問予定と、その訪問先の位置(顧客管理・ネタリスト)
+  function fetchVisits(day) {
+    var end = new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1);
+    var q = '種類 in ("訪問") and 実施状況 in ("予定") and 元予定No = "" and 開始日時 >= "' + ymd(day) +
+      'T00:00:00+09:00" and 開始日時 < "' + ymd(end) + 'T00:00:00+09:00" order by 開始日時 asc limit 100';
     return kintone.api(kintone.api.url("/k/v1/records", true), "GET", {
       app: APP_ID_SCHEDULE, query: q, fields: ["$id", "開始日時", "件名", "顧客No", "ネタNo", "会社名", "ネタ会社名", "参加者"],
     }).then(function (resp) {
@@ -262,10 +293,14 @@
 
   function loadAndRender() {
     var jobs = [fetchAllRecordsWithCoords()];
-    if (mode === "walk") jobs.push(fetchTodayVisits());
+    if (mode === "walk") jobs.push(kintone.Promise.resolve(new Date()));
+    if (mode === "call") jobs.push(fetchNextBusinessDay());
     return kintone.Promise.all(jobs).then(function (res) {
       allRecords = res[0];
-      todayVisits = res[1] || [];
+      visitDay = res[1] || new Date();
+      return res[1] ? fetchVisits(visitDay) : [];
+    }).then(function (visits) {
+      todayVisits = visits;
       applyFilterAndRender();
     });
   }
@@ -322,7 +357,8 @@
     var sum = document.getElementById("leads-map-summary");
     if (sum) {
       sum.textContent = mode === "all" ? filtered.length + "件"
-        : filtered.length + "件(位置が分かる店だけ)" + (mode === "walk" ? "・★=今日の訪問予定 " + todayVisits.length + "件" : "");
+        : filtered.length + "件(位置が分かる店だけ)" + (mode === "walk" ? "・★=今日の訪問予定 " + todayVisits.length + "件"
+          : "・★=" + dayLabel(visitDay) + "の訪問予定 " + todayVisits.length + "件(この周りの店にアポを取る)");
       if (mode !== "all" && filtered.length === 0) sum.textContent = "今日のリストはまだありません(毎朝6時に作られます)";
     }
     renderMap(filtered);
@@ -342,9 +378,9 @@
 
     var bounds = [];
 
-    if (mode === "walk") {
+    if (mode !== "all") {
       todayVisits.forEach(function (v) {
-        L.circle([v.lat, v.lon], { radius: WALK_RADIUS_M, color: "#7c3aed", weight: 1, fillOpacity: 0.05, dashArray: "4 4" }).addTo(mapInstance);
+        L.circle([v.lat, v.lon], { radius: mode === "walk" ? WALK_RADIUS_M : APPO_RADIUS_M, color: "#7c3aed", weight: 1, fillOpacity: 0.05, dashArray: "4 4" }).addTo(mapInstance);
         L.marker([v.lat, v.lon], {
           icon: L.divIcon({
             className: "", iconSize: [34, 34], iconAnchor: [17, 17],
@@ -352,8 +388,9 @@
               'text-shadow:0 0 2px #fff,0 0 4px #fff,0 0 6px #fff">★</div>',
           }),
           zIndexOffset: 1000,
-        }).addTo(mapInstance).bindPopup('<div style="font-size:13px"><strong>' + escapeHtml(v.time + " " + v.name) + "の訪問</strong><br>" +
-          (v.people ? "参加者: " + escapeHtml(v.people) + "<br>" : "") + "周りの円が飛び込みの範囲(1.2km)です</div>");
+        }).addTo(mapInstance).bindPopup('<div style="font-size:13px"><strong>' + escapeHtml((mode === "call" ? dayLabel(visitDay) + " " : "") + v.time + " " + v.name) + "の訪問</strong><br>" +
+          (v.people ? "参加者: " + escapeHtml(v.people) + "<br>" : "") +
+          (mode === "walk" ? "周りの円が飛び込みの範囲(1.2km)です" : "周りの円(1.2km)の店に、この訪問の前後のアポを取ります") + "</div>");
         bounds.push([v.lat, v.lon]);
       });
     }
@@ -401,14 +438,14 @@
           return mode === "walk" ? line.indexOf("【飛び込み】") === 0 : (line.indexOf("【架電】") === 0 || line.indexOf("【電話】") === 0);
         })[0] || "";
         var hours = (fv(rec, "G_営業時間", "") || "").split("\n").filter(function (line) {
-          return line.indexOf("日月火水木金土".charAt(new Date().getDay()) + ":") === 0;
+          return line.indexOf("日月火水木金土".charAt((mode === "call" ? visitDay : new Date()).getDay()) + ":") === 0;
         })[0] || fv(rec, "営業時間", "");
         listInfo =
           '<div style="margin:4px 0;padding:6px;background:#f8fafc;border-radius:4px">' +
           "<b>" + rank + "位</b>(" + scoreOf(rec) + "点)" +
           (mode === "call" && fv(rec, "架電おすすめ時間", "") ? "<br>架電: " + escapeHtml(fv(rec, "架電おすすめ時間", "")) : "") +
           (mode === "walk" && fv(rec, "飛び込みエリア", "") ? "<br>" + escapeHtml(fv(rec, "飛び込みエリア", "")) : "") +
-          (hours ? "<br>今日の営業: " + escapeHtml(hours) : "") +
+          (hours ? "<br>" + (mode === "call" ? dayLabel(visitDay) : "今日") + "の営業: " + escapeHtml(hours) : "") +
           (reason ? "<br>" + escapeHtml(reason.replace(/^【.+?】/, "理由: ")) : "") +
           (fv(rec, "話のきっかけ", "") ? "<br>話のきっかけ: " + escapeHtml(fv(rec, "話のきっかけ", "")) : "") +
           (fv(rec, "G_マップ", "") ? '<br><a href="' + escapeHtml(fv(rec, "G_マップ", "")) + '" target="_blank" rel="noopener">Googleマップで開く &gt;</a>' : "") +

@@ -134,7 +134,7 @@
   rules[APP.lead] = {
     sync: function (r, mode) {
       var miss = [], next = [];
-      if (digits(fv(r, '電話番号', '')).length < 9) miss.push('<b>電話番号</b> — 無いと毎朝の「📞 今日の架電リスト」に載りません');
+      if (digits(fv(r, '電話番号', '')).length < 9) miss.push('<b>電話番号</b> — 無いと毎朝の「📞 明日の架電リスト」に載りません');
       if (!fv(r, '市区町村', '') && !fv(r, '丁目番地等', '')) miss.push('<b>住所</b> — 地図・飛び込みリストに使います');
       if (!fv(r, '大分類', '')) miss.push('<b>大分類(業種)</b> — 架電リストの点数(業種ごとの成功率)に使います');
       var rows = fv(r, '架電履歴', []).filter(function (row) { return fv(row.value, '履歴結果', '') || fv(row.value, '履歴メモ', ''); });
