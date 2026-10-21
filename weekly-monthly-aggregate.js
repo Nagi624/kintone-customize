@@ -3,8 +3,8 @@
  * クラウドの自動作成(週報月報自動作成/main.py)と同じ数え方・同じ目標の按分にそろえている。
  *  - 実績の数え方は日報ボードと同じ: 訪問=訪問合計、
  *    架電・アポ・見込み=欄と明細の行数の大きい方、受注=受注件数。土日の実績も含め、平日/土日の内訳も出す
- *  - 目標はチーム目標(app37、対象月=月度。10月度=9/21〜10/20)。期間に含まれる各月度の目標を
- *    営業日(平日)の日数で按分して合計する。月報(21日〜20日)なら月度の目標そのもの。
+ *  - 目標はチーム目標(app37、対象月=暦の月。10月=10/1〜10/31。2026-10-22に月度(21日〜翌月20日)から変更)。
+ *    期間に含まれる各月の目標を営業日(平日)の日数で按分して合計する。月報(1日〜月末)ならその月の目標そのもの。
  *    個人レポートはチーム目標と比べないので目標欄を空にする
  */
 (function () {
@@ -45,12 +45,9 @@
     var start;
     var end;
     if (type === '月報') {
-      anchor.setDate(21);
-      if (today.getDate() < 21) {
-        anchor.setMonth(anchor.getMonth() - 1);
-      }
-      end = new Date(anchor.getTime() - DAY_MS);
-      start = new Date(anchor.getFullYear(), anchor.getMonth() - 1, 21);
+      // 先月の1日〜月末
+      start = new Date(anchor.getFullYear(), anchor.getMonth() - 1, 1);
+      end = new Date(anchor.getFullYear(), anchor.getMonth(), 0);
     } else {
       var daysSinceSunday = today.getDay() || 7;
       end = new Date(today.getTime());
@@ -152,7 +149,7 @@
     return total;
   }
 
-  // ---------- 月度(21日〜翌月20日)とチーム目標の按分 ----------
+  // ---------- 月(1日〜月末)とチーム目標の按分 ----------
   var GOAL_FIELDS = [
     ['訪問目標', 'goal_visits', 0], ['架電目標', 'goal_calls', 0], ['アポ目標', 'goal_appointments', 0],
     ['受注件数目標', 'goal_orders', 1], ['受注金額目標', 'goal_revenue', 0]
@@ -166,9 +163,8 @@
   }
   function fiscalMonth(ymd) {
     var y = +ymd.slice(0, 4), m = +ymd.slice(5, 7);
-    if (+ymd.slice(8, 10) >= 21) { m += 1; if (m === 13) { m = 1; y += 1; } }
-    var py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
-    return { key: y + '-' + pad2(m) + '-01', month: m, start: py + '-' + pad2(pm) + '-21', end: y + '-' + pad2(m) + '-20' };
+    var last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    return { key: y + '-' + pad2(m) + '-01', month: m, start: y + '-' + pad2(m) + '-01', end: y + '-' + pad2(m) + '-' + pad2(last) };
   }
   function weekdaysBetween(from, to) {
     var n = 0, d = from;
@@ -187,7 +183,7 @@
       d = addDay(fm.end, 1);
     }
     return Promise.all(parts.map(function (p) {
-      // チーム目標の対象月度は月度の初日(21日)で入力する。旧形式(当月1日)も同じ月度の期間内なので拾える
+      // チーム目標の対象月はその月の1日で入力する(その月の中の日付なら拾える)
       return getRecords(37, makeDateQuery('対象月', p.fm.start, p.fm.end),
         GOAL_FIELDS.map(function (g) { return g[0]; }))
         .then(function (recs) { return recs[0] || null; }, function () { return null; });
@@ -204,8 +200,8 @@
         out[g[1]] = total === null ? '' : Math.round(total * scale) / scale;
       });
       out.goal_note = parts.map(function (p, i) {
-        if (!goals[i]) return p.fm.month + '月度の目標は未登録';
-        return p.part === p.whole ? p.fm.month + '月度目標' : p.fm.month + '月度目標×' + p.part + '/' + p.whole + '営業日';
+        if (!goals[i]) return p.fm.month + '月の目標は未登録';
+        return p.part === p.whole ? p.fm.month + '月目標' : p.fm.month + '月目標×' + p.part + '/' + p.whole + '営業日';
       }).join('＋');
       return out;
     });

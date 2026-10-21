@@ -4,7 +4,7 @@
  * スマホは0件の一覧「日報ボード(スマホ)」(レコード番号 = 0)のヘッダーに描画する。
  *
  * ① 今日のチーム: 直近30日に日報を出した人を1人1枚のカードで表示(訪問・架電・アポ・見込み・受注)。未提出は「まだ」とグレー
- * ② 今月度のチーム目標: チーム目標(app37)の当月度レコード(月度=21日〜翌月20日)に対する達成率。平日ベースの「ペース」の目印付き。空欄の目標は出さない
+ * ② 今月のチーム目標: チーム目標(app37)の今月(1日〜月末)のレコードに対する達成率。平日ベースの「ペース」の目印付き。空欄の目標は出さない
  * ③ Good News: 直近14日の明細で区分が受注/アポ獲得/見込みの行(会社名と区分だけ。内容のメモは出さない)
  * ④ バッジ: 🔥連続提出(平日。土日は休みでも途切れない。当日未提出なら前日まで)/🏆自己ベスト(過去3件以上あるとき)/🎉初受注
  * ⑤ 👏拍手: その日報のコメント欄に一言を書き込む
@@ -146,13 +146,12 @@
     return n;
   }
 
-  // 会社の集計期間は21日〜翌月20日の「月度」(2026-10-11決定、全アプリ共通)。10月度=9/21〜10/20
-  // key は月度の年月(10月度='2026-10')
+  // 会社の集計期間は暦の月(1日〜月末。2026-10-22に月度=21日〜翌月20日から変更、全アプリ共通)
+  // key はその月の年月(10月='2026-10')
   function fiscalMonth(date) {
-    var y = +date.slice(0, 4), m = +date.slice(5, 7), day = +date.slice(8, 10);
-    if (day >= 21) { m += 1; if (m === 13) { m = 1; y += 1; } }
-    var py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
-    return { key: y + '-' + pad(m), month: m, start: py + '-' + pad(pm) + '-21', end: y + '-' + pad(m) + '-20' };
+    var y = +date.slice(0, 4), m = +date.slice(5, 7);
+    var last = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    return { key: y + '-' + pad(m), month: m, start: y + '-' + pad(m) + '-01', end: y + '-' + pad(m) + '-' + pad(last) };
   }
 
   function newsItems(reports, date) {
@@ -185,7 +184,7 @@
   function loadGoal(date) {
     var fm = fiscalMonth(date), month = fm.key;
     if (state.goalMonth === month) return Promise.resolve();
-    // チーム目標(app37)の対象月度は月度の初日(21日)で入力する。旧形式(当月1日)も同じ月度の期間内なので拾える
+    // チーム目標(app37)の対象月はその月の1日で入力する(その月の中の日付なら拾える)
     return kintone.api(kintone.api.url('/k/v1/records', true), 'GET', {
       app: APP_GOAL, query: '対象月 >= "' + fm.start + '" and 対象月 <= "' + fm.end + '" limit 1'
     }).then(function (resp) {
@@ -214,7 +213,7 @@
     var g = state.goal;
     var fm = fiscalMonth(date);
     if (!g) {
-      return '<section class="db-sec"><h3>🎯 ' + fm.month + '月度のチーム目標</h3><p class="db-muted">' + fm.month + '月度の目標はまだ登録されていません。</p></section>';
+      return '<section class="db-sec"><h3>🎯 ' + fm.month + '月のチーム目標</h3><p class="db-muted">' + fm.month + '月の目標はまだ登録されていません。</p></section>';
     }
     var monthRecs = state.reports.filter(function (r) { var d = fv(r, '日付', ''); return d >= fm.start && d <= date; });
     var m = sumMetrics(monthRecs);
@@ -236,7 +235,7 @@
         '<s style="left:' + Math.min(100, pace * 100) + '%" title="今日までのペースの目安"></s></div></div>';
     }).join('');
     var word = fv(g, 'ひとこと', '');
-    return '<section class="db-sec"><h3>🎯 ' + fm.month + '月度のチーム目標 <small>' + esc(label(fm.start)) + '〜' + esc(label(fm.end)) + '</small></h3>' +
+    return '<section class="db-sec"><h3>🎯 ' + fm.month + '月のチーム目標 <small>' + esc(label(fm.start)) + '〜' + esc(label(fm.end)) + '</small></h3>' +
       (word ? '<p class="db-word">' + esc(word) + '</p>' : '') +
       (bars || '<p class="db-muted">目標の数字が入っていません。</p>') +
       '<p class="db-note">縦線は「今日までに進んでいたい目安」(平日の営業日ベース。土日の実績も含めて数えます)</p></section>';
