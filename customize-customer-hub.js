@@ -1,26 +1,33 @@
 /*
- * 顧客管理(app18) 詳細画面の「作業パネル」と一覧画面の「Googleマップから電話先を登録」  PC/スマホ両対応(2026-10-16)
+ * 顧客管理(app18) 詳細画面の「作業パネル」と一覧画面の「Googleマップからお店を登録」  PC/スマホ両対応(2026-10-16)
  *
  * 架電担当が 顧客管理→案件管理→活動履歴 を行き来せず、顧客の画面だけで済むようにする。
  * データの置き場所は今のまま(案件=19・活動履歴=17・予定=34)。この画面から各アプリへ書き込むだけなので、
  * 日報の自動取り込み・週報月報・グラフ・見積/請求の紐付けはそのまま動く。
  *
  * - 上段: この顧客の案件(進行中)・次の連絡/予定・先方担当者・最近のやりとり を1枚に表示
- * - 📞 電話を記録: 結果(コール業務)・メモ・次回連絡日 → 活動履歴17に1件(対応種別=電話)。
+ * - 📞 架電を記録: 結果(コール業務)・メモ・次回連絡日 → 活動履歴17に1件(対応種別=架電)。
  *   結果が「アポ獲得」のときだけ、商談日時・商談に行く人・提案商品を聞いて案件19を作る(進行中の案件があれば更新)。
  *   商談担当者は自分+商談に行く人(渡邉さんの「架電時フロー」(マニュアル12)どおり、両方の予定表に入る)
  *   → 案件の次回商談日からスケジュール34の予定を作る(customize-schedule-links.js と同じ処理)。
- *   案件は「商談が決まったら作る」もので、電話1本ごとには作らない。
+ *   案件は「商談が決まったら作る」もので、架電1本ごとには作らない。
  * - 🚶 訪問を記録(2026-10-17): 報告・案件のフェーズ/確度・次回連絡日 → 活動履歴17に1件(対応種別=商談(初回/2回目以降))。
  *   今日の自分の訪問予定がこの会社にあれば、その予定の訪問として記録して予定を完了にする(スケジュールの訪問完了と同じ。二重にしない)。
  *   活動履歴17は確認用(直接の入力・編集はしない)。記録はこのパネル・スケジュールの訪問完了・ネタリストからだけ入る。
  * - 💼 案件を作る・進める: フェーズ・確度・次回商談日などを小窓で更新(新規も可)。次回商談日を変えたら予定も作る/動かす。
  * - 📅 予定を入れる: 顧客・案件を入れた状態でスケジュールの新規作成画面を開く(受け取りは customize-schedule.js)。
  * - 📍 Googleマップ: GoogleマップURL(無ければWebサイトに入っているGoogleマップのURL)、どちらも無ければ店名+住所の検索で開く。
- * - 一覧画面「📞 Googleマップから電話先を登録」: Googleマップでコピーした文字(スマホは共有)を貼ると店名・電話・住所を読み取り、
- *   顧客を登録(顧客ランクは仮のD)して、そのまま電話の結果まで記録する。顧客管理に同じお店があれば登録させずそちらへ案内。
+ * - 一覧画面「📍 Googleマップからお店を登録」(2026-10-20に「📞 …電話先を登録」から改名。2026-10-21に画面の「電話」を「架電」に統一): 架電した/訪問したを選んで登録する。
+ *   訪問を選ぶと架電の記録は作らず、登録後の顧客画面で「🚶 訪問を記録」を開く(訪問の人が架電扱いにならないように)。
+ *   Googleマップでコピーした文字(スマホは共有)を貼ると店名・電話番号・住所を読み取り、
+ *   顧客を登録(顧客ランクは仮のD)して、そのまま架電の結果まで記録する。顧客管理に同じお店があれば登録させずそちらへ案内。
  *   ネタリストに同じお店があれば、履歴が無いネタは顧客管理へ移し(ネタは削除)、履歴があるネタはネタリストの「顧客管理へ登録」へ案内。
  *   GoogleのAPIは使わない(取った値は規約で30日を超えて保存できないため。利用者が貼り付けた文字だけを読む)。
+ *
+ * 2026-10-21:
+ * - 架電の結果に「失注」(はっきり断られた・今後かけない)。進行中の案件があれば一緒に失注にでき、次回連絡日は空にする
+ * - 架電・訪問の記録に「日付」を付けた。朝6時前は前日を初期値にする(夜中に前日分を入れると当日の記録になり、日報が二重になっていたため)
+ * - 対応種別の値は「電話」→「架電」(活動履歴17の選択肢も改名)
  *
  * 貼り付けの読み取り・重複チェックは customize-maps-paste.js(同じアプリに登録が必要。ネタリストと共用)。
  * 置き場所: フォームのスペース(要素ID customer_hub)。無ければヘッダーの空き(PCはメニュー横・スマホはヘッダー)に出す。
@@ -39,14 +46,17 @@
   var ROOT_ID = 'chub-root';
   var PREFILL_KEY = 'sched-prefill-34';
 
-  // 電話の結果(案件管理の旧「コール業務」と同じ言葉。活動履歴17の「コール業務」に入れる)
+  // 架電の結果(案件管理の旧「コール業務」と同じ言葉。活動履歴17の「コール業務」に入れる)
   var CALL_RESULTS = [
     { v: 'コールのみ', hint: '留守電・通話中・つながらない' },
     { v: '担当不在', hint: '担当者が不在・手が離せない' },
     { v: 'ネタ', hint: '話せた(今回はアポなし)' },
     { v: 'アポ獲得', hint: '商談の約束ができた' },
-    { v: '受付ブロック', hint: '受付で断られた・取り付く島もない' }
+    { v: '受付ブロック', hint: '受付で断られた・取り付く島もない' },
+    { v: '失注', hint: 'はっきり断られた・今後かけない' }
   ];
+  // この時刻より前の記録は前日の分として日付の初期値を前日にする
+  var DAY_START_HOUR = 6;
   var CLOSED = ['受注', '失注', '保留/中止'];
   var WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -58,6 +68,22 @@
   function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  // 記録する日の初期値(朝6時前は前日)
+  function workDay() {
+    var d = new Date();
+    if (d.getHours() < DAY_START_HOUR) d.setDate(d.getDate() - 1);
+    return ymd(d);
+  }
+  function nextYmd(s) { var d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + 1); return ymd(d); }
+  // 日付の入力欄。今日でなければ注意を出す
+  function dateNote(input, note) {
+    function upd() {
+      var v = input.value;
+      note.textContent = !v ? '' : v === ymd(new Date()) ? '' : v < ymd(new Date()) ? '※ ' + dLabel(v) + ' の分として記録します(日報もその日に入ります)' : '※ 未来の日付になっています';
+    }
+    input.addEventListener('change', upd);
+    upd();
+  }
   function toKintoneDT(d) { return d.toISOString().replace(/\.\d{3}Z$/, 'Z'); }
   function dtLabel(iso) {
     var d = new Date(iso);
@@ -149,7 +175,7 @@
     var r = fv(a, 'コール業務', '');
     var kind = fv(a, '対応種別', '');
     if (r) {
-      var cls = r === 'アポ獲得' ? 'b-apo' : r === 'ネタ' ? 'b-neta' : r === '担当不在' ? 'b-fuzai' : r === '受付ブロック' ? 'b-block' : 'b-call';
+      var cls = r === 'アポ獲得' ? 'b-apo' : r === 'ネタ' ? 'b-neta' : r === '担当不在' ? 'b-fuzai' : (r === '受付ブロック' || r === '失注') ? 'b-block' : 'b-call';
       return '<span class="chub-badge ' + cls + '">📞 ' + esc(r) + '</span>';
     }
     if (kind.indexOf('商談') === 0) return '<span class="chub-badge b-visit">🤝 ' + esc(kind) + '</span>';
@@ -273,7 +299,7 @@
     root.className = IS_MOBILE ? 'chub-m' : '';
 
     var bar = el('div', { className: 'chub-bar' });
-    var b1 = el('button', { type: 'button', className: 'chub-btn primary' }, '📞 電話を記録');
+    var b1 = el('button', { type: 'button', className: 'chub-btn primary' }, '📞 架電を記録');
     var b5 = el('button', { type: 'button', className: 'chub-btn primary' }, '🚶 訪問を記録');
     var b2 = el('button', { type: 'button', className: 'chub-btn' }, '💼 案件を作る・進める');
     var b3 = el('button', { type: 'button', className: 'chub-btn' }, '📅 予定を入れる');
@@ -296,7 +322,7 @@
 
     // 案件
     var h = '<h4>💼 案件(進行中 ' + open.length + '件' + (closed ? '・終了 ' + closed + '件' : '') + ')</h4>';
-    if (!open.length) h += '<div class="chub-muted">進行中の案件はありません。<br>アポが取れたら「📞 電話を記録」→アポ獲得で自動で作られます。</div>';
+    if (!open.length) h += '<div class="chub-muted">進行中の案件はありません。<br>アポが取れたら「📞 架電を記録」→アポ獲得で自動で作られます。</div>';
     open.forEach(function (d) {
       var next = fv(d, '次回商談日', '');
       var late = next && new Date(next) < new Date();
@@ -356,13 +382,18 @@
     root.appendChild(grid);
   }
 
-  // ---------- 📞 電話を記録 ----------
-  // 電話の結果・アポ・メモ・次回連絡日の入力欄(電話を記録/新規登録の両方で使う)
+  // ---------- 📞 架電を記録 ----------
+  // 架電の結果・アポ・メモ・次回連絡日の入力欄(架電を記録/新規登録の両方で使う)
   // opts: {open(進行中の案件), dealProps, hasNextField, nextValue}。戻り値: {el, read(): 入力値 or null(足りない)}
   function buildCallForm(opts) {
     var open = opts.open || [];
     var w = el('div');
-    w.innerHTML = '<label>結果</label><div class="chub-results"></div>' +
+    w.innerHTML = '<label style="margin-top:0">架電した日</label><input type="date" class="c-date"><div class="chub-sub c-date-note" style="margin:4px 0 0;color:#b45309"></div>' +
+      '<label>結果</label><div class="chub-results"></div>' +
+      '<div class="chub-apo c-lose" style="display:none;border-color:#fca5a5;background:#fef2f2"><b style="color:#991b1b">失注 — 今後はかけません</b>' +
+      (open.length ? '<label style="display:flex;gap:6px;align-items:center;margin:8px 0 0"><input type="checkbox" class="c-lose-deal" checked style="width:auto">進行中の案件(' +
+        esc(open.map(function (d) { return fv(d, '提案商品', '') || '商品未選択'; }).join('・')) + ')も失注にする</label>' : '') +
+      '<div class="chub-sub" style="margin:6px 0 0">次回連絡日は空にします。断られた理由をメモに残してください。</div></div>' +
       '<div class="chub-apo" style="display:none"><b>🎉 アポ獲得 — 商談の予定</b>' +
       '<label>商談の日時</label><input type="datetime-local" class="c-apo-dt">' +
       '<label>商談に行く人(押すたびに選ぶ/外す。何人でも)</label><div class="chub-chips c-apo-users"></div>' +
@@ -373,7 +404,12 @@
       (opts.hasNextField ? '<label>次回連絡日(またかけるとき)</label><input type="date" class="c-next">' : '');
     var chosen = '';
     var box = w.querySelector('.chub-results');
-    var apoBox = w.querySelector('.chub-apo');
+    var apoBox = w.querySelector('.chub-apo:not(.c-lose)');
+    var loseBox = w.querySelector('.c-lose');
+    var dateIn = w.querySelector('.c-date');
+    dateIn.value = workDay();
+    dateNote(dateIn, w.querySelector('.c-date-note'));
+    var nextIn = opts.hasNextField ? w.querySelector('.c-next') : null;
     CALL_RESULTS.forEach(function (c) {
       var b = el('button', { type: 'button' }, esc(c.v) + '<small>' + esc(c.hint) + '</small>');
       b.addEventListener('click', function () {
@@ -381,10 +417,16 @@
         [].forEach.call(box.children, function (x) { x.classList.remove('on'); });
         b.classList.add('on');
         apoBox.style.display = chosen === 'アポ獲得' ? 'block' : 'none';
+        loseBox.style.display = chosen === '失注' ? 'block' : 'none';
+        if (nextIn) {
+          // 失注は今後かけないので次回連絡日を空に。ほかの結果に戻したら元の値に
+          nextIn.disabled = chosen === '失注';
+          nextIn.value = chosen === '失注' ? '' : (nextIn.value || opts.nextValue || '');
+        }
       });
       box.appendChild(b);
     });
-    if (opts.hasNextField && opts.nextValue) w.querySelector('.c-next').value = opts.nextValue;
+    if (nextIn && opts.nextValue) nextIn.value = opts.nextValue;
     var itemSel = w.querySelector('.c-apo-item');
     optionsOf(opts.dealProps || {}, '提案商品', ['RIDE CAST(タクシー動画広告)', 'MEO代行', 'その他']).forEach(function (v) {
       var o = el('option', { value: v }, esc(v));
@@ -406,12 +448,14 @@
       el: w,
       read: function () {
         if (!chosen) { alert('結果を選んでください'); return null; }
+        if (!dateIn.value) { alert('架電した日を入れてください'); return null; }
         var apoDt = fromLocalInput(w.querySelector('.c-apo-dt').value);
         if (chosen === 'アポ獲得' && !apoDt) { alert('商談の日時を入れてください'); return null; }
         if (chosen === 'アポ獲得' && !picker.get().length) { alert('商談に行く人を選んでください'); return null; }
         return {
-          open: open, chosen: chosen, memo: w.querySelector('.c-memo').value.trim(),
-          next: opts.hasNextField ? w.querySelector('.c-next').value : '', prevNext: opts.nextValue || '', hasNextField: opts.hasNextField,
+          open: open, chosen: chosen, memo: w.querySelector('.c-memo').value.trim(), date: dateIn.value,
+          loseDeal: chosen === '失注' && !!w.querySelector('.c-lose-deal') && w.querySelector('.c-lose-deal').checked,
+          next: nextIn ? nextIn.value : '', prevNext: opts.nextValue || '', hasNextField: opts.hasNextField,
           apoDt: apoDt, apoUsers: picker.get(),
           item: itemSel.value, kakudo: kakudoSel.value
         };
@@ -424,7 +468,7 @@
     var form = buildCallForm({ open: openDeals(data.deals), dealProps: data.dealProps, hasNextField: !!r['次回連絡日'], nextValue: fv(r, '次回連絡日', '') });
     var bg = el('div', { className: 'chub-bg' });
     var m = el('div', { className: 'chub-modal' });
-    m.innerHTML = '<h3>📞 電話を記録</h3><div class="chub-sub">' + esc(fv(r, '会社名', '')) + ' ・ 今日 ・ ' + esc(kintone.getLoginUser().name) + '(活動履歴に1件残ります)</div>';
+    m.innerHTML = '<h3>📞 架電を記録</h3><div class="chub-sub">' + esc(fv(r, '会社名', '')) + ' ・ ' + esc(kintone.getLoginUser().name) + '(活動履歴に1件残ります)</div>';
     m.appendChild(form.el);
     m.appendChild(el('div', { className: 'chub-btns' }, '<button type="button" class="c-cancel">キャンセル</button><button type="button" class="primary c-save">保存</button>'));
     bg.appendChild(m);
@@ -451,7 +495,7 @@
     });
   }
 
-  // 電話1本の記録: アポ獲得なら案件を作る/更新して予定も入れ、活動履歴に1件、次回連絡日を更新する。
+  // 架電1本の記録: アポ獲得なら案件を作る/更新して予定も入れ、活動履歴に1件、次回連絡日を更新する。
   // p: {custNo, company, open(進行中の案件), chosen, memo, next, prevNext, hasNextField, apoDt, apoUsers, item, kakudo}
   // msgs: 済んだことを順に足していく(途中で失敗したときに伝えるため)
   function recordCall(p, msgs) {
@@ -490,12 +534,21 @@
         });
       }
     }
+    // 1'. 失注で「進行中の案件も失注にする」なら、案件のフェーズを失注に(活動履歴は最初の案件に紐付ける)
+    if (chosen === '失注' && p.loseDeal && open.length) {
+      dealP = kintone.Promise.all(open.map(function (d) {
+        return api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: d.$id.value, record: { 商談フェーズ: { value: '失注' } } });
+      })).then(function () {
+        msgs.push('進行中の案件(' + open.length + '件)を失注にしました。');
+        return open[0].$id.value;
+      });
+    }
 
     // 2. 活動履歴に1件(案件があれば紐付け) 3. 次回連絡日
     return dealP.then(function (dealNo) {
       var act = {
-        タイトル: { value: '電話: ' + company }, 対応日付: { value: ymd(new Date()) },
-        対応者: { value: [{ code: me.code }] }, 対応種別: { value: '電話' }, コール業務: { value: chosen },
+        タイトル: { value: '架電: ' + company }, 対応日付: { value: p.date || workDay() },
+        対応者: { value: [{ code: me.code }] }, 対応種別: { value: '架電' }, コール業務: { value: chosen },
         内容: { value: memo || chosen }, 会社名: { value: company }
       };
       if (dealNo) act.案件No = { value: String(dealNo) };
@@ -525,18 +578,18 @@
     }).catch(function () { return null; });
   }
 
-  function openVisitDialog(ctx) {
+  // day: 訪問した日(省略で今日。朝6時前は前日)。carry: 日付を変えて開き直すときに引き継ぐ入力
+  function openVisitDialog(ctx, day, carry) {
     var r = ctx.record, data = ctx.data, props = data.dealProps || {};
     var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
     var company = fv(r, '会社名', '');
     var me = kintone.getLoginUser();
-    var today = ymd(new Date());
-    var tm = new Date(); tm.setDate(tm.getDate() + 1);
+    var today = day || workDay();
     var open = openDeals(data.deals);
     // スケジュールを見られない人は予定なしとして扱う
     api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '案件No', '内容'],
       query: '顧客No = "' + custNo + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
-        '開始日時 >= "' + today + 'T00:00:00+09:00" and 開始日時 < "' + ymd(tm) + 'T00:00:00+09:00" order by 開始日時 asc limit 5' })
+        '開始日時 >= "' + today + 'T00:00:00+09:00" and 開始日時 < "' + nextYmd(today) + 'T00:00:00+09:00" order by 開始日時 asc limit 5' })
       .then(function (resp) { return resp.records; }).catch(function () { return []; })
       .then(function (plans) { showVisitDialog(plans); });
 
@@ -544,8 +597,9 @@
       var hasNext = !!r['次回連絡日'];
       var bg = el('div', { className: 'chub-bg' });
       var m = el('div', { className: 'chub-modal' });
-      m.innerHTML = '<h3>🚶 訪問を記録</h3><div class="chub-sub">' + esc(company) + ' ・ 今日 ・ ' + esc(me.name) + '(活動履歴に1件残ります)</div>' +
-        (plans.length ? '<label>今日の訪問予定</label><select class="v-plan"></select>' +
+      m.innerHTML = '<h3>🚶 訪問を記録</h3><div class="chub-sub">' + esc(company) + ' ・ ' + esc(me.name) + '(活動履歴に1件残ります)</div>' +
+        '<label style="margin-top:0">訪問した日</label><input type="date" class="v-date"><div class="chub-sub v-date-note" style="margin:4px 0 0;color:#b45309"></div>' +
+        (plans.length ? '<label>' + dLabel(today) + 'の訪問予定</label><select class="v-plan"></select>' +
           '<div class="chub-sub v-plan-note" style="margin:6px 0 0"></div>' : '') +
         '<label>案件</label><select class="v-deal"></select>' +
         '<div class="chub-row2 v-deal-box"><div><label>商談フェーズ</label><select class="v-phase"></select></div>' +
@@ -557,6 +611,20 @@
       document.body.appendChild(bg);
       var $ = function (c) { return m.querySelector(c); };
       if (hasNext && fv(r, '次回連絡日', '')) $('.v-next').value = fv(r, '次回連絡日', '');
+      if (carry) {
+        $('.v-memo').value = carry.memo || '';
+        if (hasNext && carry.next !== undefined) $('.v-next').value = carry.next;
+      }
+      $('.v-date').value = today;
+      dateNote($('.v-date'), $('.v-date-note'));
+      // 日付を変えたら、その日の訪問予定で選び直せるように開き直す(書いた報告は引き継ぐ)
+      $('.v-date').addEventListener('change', function () {
+        var v = this.value;
+        if (!v || v === today) return;
+        var keep = { memo: $('.v-memo').value, next: hasNext ? $('.v-next').value : undefined };
+        if (bg.parentNode) document.body.removeChild(bg);
+        openVisitDialog(ctx, v, keep);
+      });
 
       var dealSel = $('.v-deal');
       dealSel.appendChild(el('option', { value: '' }, '(案件なし)'));
@@ -645,7 +713,7 @@
           if (!plan) return null;
           return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: plan.$id.value, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(actId) } } })
             .then(function () {
-              msgs.push('今日の予定(' + dtLabel(fv(plan, '開始日時', '')) + ')を完了にしました。');
+              msgs.push('予定(' + dtLabel(fv(plan, '開始日時', '')) + ')を完了にしました。');
               return syncDealNext(fv(plan, '案件No', ''));
             });
         }).then(function () {
@@ -782,10 +850,15 @@
     location.href = IS_MOBILE ? '/k/m/' + SCHEDULE_APP_ID + '/edit' : '/k/' + SCHEDULE_APP_ID + '/edit';
   }
 
-  // ---------- 📞 Googleマップから電話先を登録(一覧画面) ----------
-  // Googleマップで見つけたお店を、顧客登録+電話の記録まで1画面で行う。
+  // ---------- 📍 Googleマップからお店を登録(一覧画面) ----------
+  // Googleマップで見つけたお店を、顧客登録+架電の記録(または訪問の記録)まで続けて行う。
+  // 訪問は「🚶 訪問を記録」と同じ処理を使う(今日の訪問予定の完了・商談(初回)の判定を二重に持たない)。
   // 読み取りは利用者が貼り付けた文字だけ(GoogleのAPIで取った値は規約で30日を超えて保存できないため、APIは使わない)。
   var LEAD_APP_ID = 29;
+  var QUICK_MODE_KEY = 'chub-quick-mode';   // 前回選んだ「架電/訪問」(人ごと・端末ごと)
+  var OPEN_VISIT_KEY = 'chub-open-visit';   // 登録直後に顧客画面で訪問の記録を開く印
+  function loadQuickMode() { try { return localStorage.getItem(QUICK_MODE_KEY) === 'visit' ? 'visit' : 'call'; } catch (e) { return 'call'; } }
+  function saveQuickMode(v) { try { localStorage.setItem(QUICK_MODE_KEY, v); } catch (e) { /* 次回は架電から */ } }
   // 読み取り・重複チェックは customize-maps-paste.js(ネタリストと共用)。ボタンを押したときに参照する
   function MP() {
     if (!window.TaimeiMapsPaste) throw new Error('customize-maps-paste.js が読み込まれていません');
@@ -810,7 +883,10 @@
     var props = {};
     var bg = el('div', { className: 'chub-bg' });
     var m = el('div', { className: 'chub-modal', style: 'max-width:520px' });
-    m.innerHTML = '<h3>📞 Googleマップから電話先を登録</h3>' +
+    m.innerHTML = '<h3>📍 Googleマップからお店を登録</h3>' +
+      '<label style="margin-top:0">このお店に</label><div class="chub-chips q-mode">' +
+      '<button type="button" class="chub-chip" data-mode="call">📞 架電した</button>' +
+      '<button type="button" class="chub-chip" data-mode="visit">🚶 訪問した</button></div>' +
       '<div class="chub-sub">Googleマップでお店を開き、店名〜電話番号の部分をコピー(スマホは「共有」→コピー)して貼り付けると読み取ります。手で入れてもかまいません。</div>' +
       '<textarea class="q-paste" placeholder="ここに貼り付け(URLだけでも可)" style="min-height:64px"></textarea><div class="q-note chub-sub" style="margin:6px 0 0"></div>' +
       '<label>会社名・店名(必須)</label><input type="text" class="q-name">' +
@@ -820,12 +896,27 @@
       '<label>住所</label><input type="text" class="q-addr">' +
       '<label>GoogleマップのURL(あれば)</label><input type="url" class="q-url">' +
       '<div class="q-dup"></div><div class="q-call"></div>' +
+      '<div class="q-visit-note chub-sub" style="display:none;margin-top:10px">登録すると顧客の画面が開き、続けて「🚶 訪問を記録」が開きます(今日の訪問予定があれば、その予定の訪問として記録できます)。</div>' +
       '<div class="chub-btns"><button type="button" class="q-cancel">キャンセル</button><button type="button" class="primary q-save">登録して記録</button></div>';
     bg.appendChild(m);
     document.body.appendChild(bg);
     var $ = function (c) { return m.querySelector(c); };
     var form = null, hasNextField = true;
     var lead = null, leadBlocked = false, custHit = null;
+    var mode = loadQuickMode();
+    function setMode(v) {
+      mode = v;
+      Array.prototype.forEach.call(m.querySelectorAll('.q-mode .chub-chip'), function (b) {
+        b.className = 'chub-chip' + (b.getAttribute('data-mode') === v ? ' on' : '');
+      });
+      $('.q-call').style.display = v === 'call' ? '' : 'none';
+      $('.q-visit-note').style.display = v === 'visit' ? '' : 'none';
+      $('.q-save').textContent = v === 'call' ? '登録して架電を記録' : '登録して訪問を記録';
+    }
+    Array.prototype.forEach.call(m.querySelectorAll('.q-mode .chub-chip'), function (b) {
+      b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); saveQuickMode(mode); });
+    });
+    setMode(mode);
 
     api('/k/v1/app/form/fields', 'GET', { app: CUSTOMER_APP_ID }).then(function (r) {
       props = r.properties;
@@ -881,7 +972,7 @@
         if (seq !== dupSeq) return null;
         if (res[0].length) {
           custHit = res[0][0];
-          box.innerHTML = '<div class="chub-apo" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c">顧客管理に同じお店があります: <a href="' + custUrl(custHit.$id.value) + '">No.' + esc(custHit.$id.value) + ' ' + esc(fv(custHit, '会社名', '')) + '</a><br>そちらを開いて「📞 電話を記録」で記録してください。</div>';
+          box.innerHTML = '<div class="chub-apo" style="border-color:#fca5a5;background:#fef2f2;color:#b91c1c">顧客管理に同じお店があります: <a href="' + custUrl(custHit.$id.value) + '">No.' + esc(custHit.$id.value) + ' ' + esc(fv(custHit, '会社名', '')) + '</a><br>そちらを開いて「📞 架電を記録」で記録してください。</div>';
           return null;
         }
         if (!res[1].length) { box.innerHTML = ''; return null; }
@@ -905,8 +996,9 @@
       var name = $('.q-name').value.trim();
       if (!name) { alert('会社名・店名を入れてください'); return; }
       if (!form) return;
-      var call = form.read();
-      if (!call) return;
+      var isVisit = mode === 'visit';
+      var call = isVisit ? null : form.read();
+      if (!isVisit && !call) return;
       btn.disabled = true;
       var msgs = [];
       var newId = null;
@@ -916,7 +1008,7 @@
         if (lead && leadBlocked) throw new Error('ネタリストのネタNo.' + lead.$id.value + 'から「顧客管理へ登録」で移してください。');
         var rec = {
           会社名: { value: name }, 顧客ランク: { value: 'D' },
-          顧客情報メモ欄: { value: '架電で登録(Googleマップから' + (lead ? '・ネタNo.' + lead.$id.value + 'より移動' : '') + ')。顧客ランクは仮置きのD。' }
+          顧客情報メモ欄: { value: (isVisit ? '訪問' : '架電') + 'で登録(Googleマップから' + (lead ? '・ネタNo.' + lead.$id.value + 'より移動' : '') + ')。顧客ランクは仮置きのD。' }
         };
         var vals = {
           電話番号: $('.q-phone').value.trim() || (lead ? fv(lead, '電話番号', '') : ''),
@@ -930,12 +1022,17 @@
         // 中分類(表示用)はルックアップの写し先。中分類選択が無いネタだけ、文字のまま移す
         if (lead && !vals.中分類選択) vals.中分類 = fv(lead, '中分類', '');
         if (lead) ['業種メモ', '営業時間', '定休日', '緯度', '経度'].forEach(function (k) { vals[k] = fv(lead, k, ''); });
-        if (hasNextField && call.next) vals.次回連絡日 = call.next;
+        if (hasNextField && call && call.next) vals.次回連絡日 = call.next;
         Object.keys(vals).forEach(function (k) { if (vals[k] !== '' && (props[k] || !Object.keys(props).length)) rec[k] = { value: vals[k] }; });
         return api('/k/v1/record', 'POST', { app: CUSTOMER_APP_ID, record: rec });
       }).then(function (resp) {
         newId = resp.id;
         msgs.push('顧客管理に登録しました(No.' + newId + ')。');
+        if (isVisit) {
+          // 訪問の記録は顧客画面の「🚶 訪問を記録」で行う(開いたら自動で出す)
+          try { sessionStorage.setItem(OPEN_VISIT_KEY, String(newId)); } catch (e) { msgs.push('顧客の画面で「🚶 訪問を記録」を押して記録してください。'); }
+          return null;
+        }
         call.custNo = newId;
         call.company = name;
         call.hasNextField = false; // 次回連絡日は登録時に入れた
@@ -951,7 +1048,7 @@
         });
       }).then(function () {
         close();
-        alert('登録しました。\n' + msgs.join('\n'));
+        alert('登録しました。\n' + msgs.join('\n') + (isVisit ? '\n続けて訪問の内容を記録してください。' : ''));
         location.href = custUrl(newId);
       }).catch(function (err) {
         btn.disabled = false;
@@ -969,7 +1066,7 @@
     if (old && old.parentNode) old.parentNode.removeChild(old);
     var space = IS_MOBILE ? kintone.mobile.app.getHeaderSpaceElement() : kintone.app.getHeaderMenuSpaceElement();
     if (!space) return event;
-    var b = el('button', { type: 'button', id: 'chub-quick' }, '📞 Googleマップから電話先を登録');
+    var b = el('button', { type: 'button', id: 'chub-quick' }, '📍 Googleマップからお店を登録');
     b.style.cssText = 'padding:6px 14px;border-radius:4px;border:1px solid #2563eb;background:#2563eb;color:#fff;cursor:pointer;font-size:13px;margin-right:8px;' +
       (IS_MOBILE ? 'display:block;width:calc(100% - 24px);margin:8px 12px;padding:12px 14px;font-size:15px;' : '');
     b.addEventListener('click', openQuickRegister);
@@ -1001,8 +1098,15 @@
     root.innerHTML = '<div class="chub-muted">読み込み中…</div>';
     var r = event.record;
     var custNo = fv(r, '顧客No', '') || event.recordId;
+    var openVisit = false;
+    try {
+      openVisit = sessionStorage.getItem(OPEN_VISIT_KEY) === String(event.recordId);
+      if (openVisit) sessionStorage.removeItem(OPEN_VISIT_KEY);
+    } catch (e) { openVisit = false; }
     loadAll(custNo).then(function (data) {
-      render(root, { record: r, data: data });
+      var ctx = { record: r, data: data };
+      render(root, ctx);
+      if (openVisit) openVisitDialog(ctx); // 「📍 Googleマップからお店を登録」で訪問を選んで登録した直後
     }).catch(function () {
       root.innerHTML = '<div class="chub-muted">作業パネルを読み込めませんでした。</div>';
     });

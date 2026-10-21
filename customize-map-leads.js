@@ -397,7 +397,8 @@
       var listInfo = "";
       if (mode !== "all") {
         var reason = fv(rec, "優先度の理由", "").split("\n").filter(function (line) {
-          return line.indexOf(mode === "walk" ? "【飛び込み】" : "【電話】") === 0;
+          // 2026-10-21に【電話】→【架電】へ改名。切り替え前に書かれた理由も読めるよう両方を見る
+          return mode === "walk" ? line.indexOf("【飛び込み】") === 0 : (line.indexOf("【架電】") === 0 || line.indexOf("【電話】") === 0);
         })[0] || "";
         var hours = (fv(rec, "G_営業時間", "") || "").split("\n").filter(function (line) {
           return line.indexOf("日月火水木金土".charAt(new Date().getDay()) + ":") === 0;
@@ -405,7 +406,7 @@
         listInfo =
           '<div style="margin:4px 0;padding:6px;background:#f8fafc;border-radius:4px">' +
           "<b>" + rank + "位</b>(" + scoreOf(rec) + "点)" +
-          (mode === "call" && fv(rec, "架電おすすめ時間", "") ? "<br>電話: " + escapeHtml(fv(rec, "架電おすすめ時間", "")) : "") +
+          (mode === "call" && fv(rec, "架電おすすめ時間", "") ? "<br>架電: " + escapeHtml(fv(rec, "架電おすすめ時間", "")) : "") +
           (mode === "walk" && fv(rec, "飛び込みエリア", "") ? "<br>" + escapeHtml(fv(rec, "飛び込みエリア", "")) : "") +
           (hours ? "<br>今日の営業: " + escapeHtml(hours) : "") +
           (reason ? "<br>" + escapeHtml(reason.replace(/^【.+?】/, "理由: ")) : "") +
@@ -422,7 +423,7 @@
         "(" + escapeHtml(fv(rec, "業種確認メモ", "") || "-") + ")<br>" +
         "確認者: " + escapeHtml(fv(rec, "確認者", "") || "-") + "<br>" +
         "対応状況: " + escapeHtml(fv(rec, "対応状況", "") || "-") + "<br>" +
-        (tel ? "電話: " + escapeHtml(tel) + "<br>" : "") +
+        (tel ? "電話番号: " + escapeHtml(tel) + "<br>" : "") +
         "住所: " + escapeHtml(fv(rec, "都道府県", "") + fv(rec, "市区町村", "") + fv(rec, "丁目番地等", "")) + "<br>" +
         '<a href="' + recordUrl + '" target="_blank" rel="noopener">レコードを開く &gt;</a>' +
         "</div>";

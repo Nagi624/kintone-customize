@@ -15,7 +15,7 @@
  * 3. ネタリスト(app29):
  *    a. 架電履歴の行のうち 日付=日付 かつ 担当=報告者
  *       結果 獲得→アポ獲得 / ネタ→見込み / それ以外→架電(種別が飛び込みなら訪問)
- *       飛び込みは訪問件数にも数える(時刻で午前/午後。時刻が空なら午前)
+ *       飛び込みは訪問件数にも数える(時刻で午前/午後。時刻が空なら午後)
  *    b. その日に報告者が新規登録したネタ(aで出たものを除く)。6件以上なら1行にまとめる
  * 4. スケジュール(app34): 参加者=報告者 かつ 開始がその日 の 訪問・外出
  *    訪問(中止以外)の件数を開始時刻で午前/午後に数え、訪問件数欄に入れる(手入力の方が多ければそのまま)
@@ -38,6 +38,13 @@
  *   - 保存するときは、画面を開いた後(または最後に取り込んだ後)に新しく入った記録だけを足す。
  *     開いた時点の記録は足さない(利用者がわざと消した行が保存のたびに戻らないように)
  *
+ * 日を跨いだ入力(2026-10-21。夜中〜早朝に前日分を書くと、前日の記録が当日の日報に入り訪問件数が二重になっていたため):
+ *   - 朝6時前に新しい日報を開いたら、日付を前日にして開く(各記録ボタンも6時前は前日を初期値にしている)
+ *   - 作成画面で日付・報告者を変えたら、それまでに自動で取り込んだ行と件数を外して、新しい日付で取り込み直す
+ *   - 後日に入力した活動履歴(作成日≠対応日付)は作成時刻が当てにならないので、時間帯は午後として数える
+ *
+ * 架電の種別(2026-10-21): 活動履歴の対応種別・ネタリストの種別の「電話」は「架電」に改名。過去の値も読めるよう両方を架電として扱う
+ *
  * 二重取り込み防止: 内容の先頭に [履歴No.X] [案件No.X] [ネタNo.X-行ID] [ネタ新規] [予定No.X] の印を付け、既にある印はスキップする
  * 1社1行: 同じ会社(表記ゆれ・空白を無視)か同じ案件No.の行が既にあれば、新しい行は作らずその行にまとめる。
  *   内容は「既存 / 取り込み分」とつなぎ、区分は成果の大きい方(受注>アポ獲得>見込み>訪問>架電>その他)、
@@ -52,6 +59,9 @@
   var NEW_LEAD_DETAIL_LIMIT = 5;
   // 活動履歴を確認用にした日(2026-10-17)。これより前は活動履歴に手入力の商談があり、予定と二重に数えてしまうため数えない
   var VISIT_COUNT_FROM = '2026-10-17';
+  // この時刻より前は前日の続きとして扱う(夜中に前日分の日報を書くため)
+  var DAY_START_HOUR = 6;
+  function isCallKind(t) { return t === '架電' || t === '電話'; }
 
   // PC/スマホでレコード操作APIが違うため、イベントの種類から判定して切り替える
   var IS_MOBILE = false;
@@ -88,6 +98,14 @@
   function ampm(iso) {
     if (!iso) return null;
     return new Date(iso).getHours() < 12 ? '午前' : '午後';
+  }
+
+  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  // 営業日としての今日(朝6時前は前日)
+  function workDay() {
+    var d = new Date();
+    if (d.getHours() < DAY_START_HOUR) d.setDate(d.getDate() - 1);
+    return ymd(d);
   }
 
   function shorten(s, len) {
@@ -152,21 +170,23 @@
       return recs.map(function (a) {
         var t = fv(a, '対応種別', '');
         // 電話の結果(コール業務、顧客管理の「📞 電話を記録」が入れる)がアポ獲得なら区分もアポ獲得にする
-        var kubun = t === '電話' ? (fv(a, 'コール業務', '') === 'アポ獲得' ? 'アポ獲得' : '架電') : (t.indexOf('商談') === 0 ? '訪問' : 'その他');
+        var call = isCallKind(t);
+        var kubun = call ? (fv(a, 'コール業務', '') === 'アポ獲得' ? 'アポ獲得' : '架電') : (t.indexOf('商談') === 0 ? '訪問' : 'その他');
         var memo = fv(a, 'タイトル', '');
         var body = fv(a, '内容', '');
         if (body) memo += (memo ? '：' : '') + body;
         var fromSched = body.match(/スケジュールNo\.(\d+) から作成/);
         // 予定の無い訪問(顧客管理の「🚶 訪問を記録」)は、作成した時刻で午前/午後の訪問件数に数える。
         // 予定から作った記録・予定に紐付けた記録は予定の側で数えるので除く(apply で紐付けを見て外す)
-        var created = new Date(fv(a, '作成日時', ''));
-        var visitAt = t.indexOf('商談') === 0 && !fromSched && date >= VISIT_COUNT_FROM ? (created.getHours() < 12 ? '午前' : '午後') : null;
+        // 後日に入力した記録(夜中に前日分を書いたなど)は作成時刻が当てにならないので午後とする
+        var time = isOnDate(fv(a, '作成日時', ''), date) ? ampm(fv(a, '作成日時', '')) : '午後';
+        var visitAt = t.indexOf('商談') === 0 && !fromSched && date >= VISIT_COUNT_FROM ? time : null;
         return {
           mark: '[履歴No.' + a.$id.value + ']',
           alt: fromSched ? '[予定No.' + fromSched[1] + ']' : null,
           actId: String(a.$id.value), visitAt: visitAt,
-          call: t === '電話',
-          row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''), time: ampm(fv(a, '作成日時', '')),
+          call: call,
+          row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''), time: time,
             memo: '[履歴No.' + a.$id.value + '] 活動履歴(' + t + ') ' + shorten(memo, 180) }
         };
       });
@@ -230,7 +250,8 @@
           var item = { mark: mark, call: !walk, row: { kubun: kubun, company: fv(l, '会社名', ''), time: hh ? (Number(hh.split(':')[0]) < 12 ? '午前' : '午後') : null,
             memo: mark + ' ネタリスト' + (walk ? '飛び込み' : '架電') + ' 結果:' + (result || '-') + (fv(v, '履歴メモ', '') ? ' ' + shorten(fv(v, '履歴メモ', ''), 120) : '') } };
           if (walk) {
-            item.walk = Number((fv(v, '履歴時刻', '') || '00').split(':')[0]) < 12 ? '午前' : '午後';
+            // 時刻が空(後日に前の日の分として記録した行)は午後とする(活動履歴と同じ)
+            item.walk = hh ? (Number(hh.split(':')[0]) < 12 ? '午前' : '午後') : '午後';
             item.row.time = item.walk;
           }
           items.push(item);
@@ -348,6 +369,7 @@
     var existing = rows.map(function (r) { return fv(r.value, '内容', ''); }).join('\n');
     var counts = [0, 0, 0, 0];
     var merged = 0;
+    var added = [];
     var byKey = {};
     function register(row) {
       rowKeys(fv(row.value, '明細_会社名', ''), fv(row.value, '明細_案件No', '')).forEach(function (k) {
@@ -370,10 +392,11 @@
         }
         register(target);
         existing += '\n' + it.mark;
+        added.push(it.mark);
         counts[i]++;
       });
     });
-    var out = { counts: counts, total: counts[0] + counts[1] + counts[2] + counts[3], merged: merged };
+    var out = { counts: counts, total: counts[0] + counts[1] + counts[2] + counts[3], merged: merged, added: added };
     // 訪問件数(予定+飛び込み)・架電件数: 数えた方が手入力より多いときだけ上書き
     out.visit = [sched.am + walkAm, sched.pm + walkPm];
     out.visitChanged = false;
@@ -431,30 +454,71 @@
     btn.parentNode.insertBefore(n, btn.nextSibling);
   }
 
+  // この画面で取り込んだ行の印と、取り込みで書き換えた欄の元の値(日付・報告者を変えたときに外すため)
+  var TRACK_FIELDS = ['訪問_午前', '訪問_午後', '架電件数', '明日の目標'];
+  var imported = null;
+  function snapshot(record) {
+    var s = {};
+    TRACK_FIELDS.forEach(function (f) { if (record[f]) s[f] = record[f].value; });
+    return s;
+  }
+  function track(before, record, o) {
+    imported = imported || { marks: {}, orig: {}, set: {} };
+    (o.added || []).forEach(function (m) { imported.marks[m] = true; });
+    TRACK_FIELDS.forEach(function (f) {
+      if (!record[f] || record[f].value === before[f]) return;
+      if (!(f in imported.orig)) imported.orig[f] = before[f];
+      imported.set[f] = record[f].value;
+    });
+  }
+  // 取り込んだ行を外し、取り込みで書き換えた欄を元に戻す(その後に利用者が書き換えた欄はそのまま)
+  function undoImported(record) {
+    if (!imported) return false;
+    var marks = Object.keys(imported.marks);
+    var rows = fv(record, TABLE, []);
+    var kept = rows.filter(function (r) {
+      var c = fv(r.value, '内容', '');
+      return !marks.some(function (m) { return c.indexOf(m) === 0; });
+    });
+    var changed = kept.length !== rows.length;
+    if (changed) record[TABLE].value = kept.length ? kept : [makeRow({ kubun: '訪問', memo: '' })];
+    Object.keys(imported.set).forEach(function (f) {
+      if (record[f] && record[f].value === imported.set[f]) { record[f].value = imported.orig[f]; changed = true; }
+    });
+    imported = null;
+    return changed;
+  }
+
   // ボタン(manual=true)と、新しい日報を開いたときの自動取り込み(manual=false)
-  function importNow(manual) {
+  function importNow(manual, lead) {
     var t = target(recApi().get().record);
     if (!t) {
       if (manual) window.alert('日付と報告者を入力してから押してください。');
       return;
     }
     collect(t.date, t.userCodes, recApi().getId()).then(function (data) {
-      remember(data);
       var latest = recApi().get(); // 取り込み中に入力された内容を消さないよう、最新を取り直してから当てはめる
+      var now = target(latest.record);
+      // 取り込み中に日付・報告者が変わったら、この結果は使わない(変更後の取り込みが別に走る)
+      if (!now || now.date !== t.date || now.userCodes.join(',') !== t.userCodes.join(',')) return;
+      remember(data);
+      var before = snapshot(latest.record);
       var o = apply(latest.record, data);
+      track(before, latest.record, o);
+      var head = lead ? lead + '\n\n' : '';
       if (!o.changed) {
         if (manual) {
           window.alert('取り込める新しい情報はありませんでした。\n(活動履歴・案件管理・ネタリスト・スケジュールに、この日・この報告者の入力が無いか、すべて取り込み済みです)' +
             (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした'));
         } else {
-          notice('この日の活動(活動履歴・案件・ネタリスト・予定)はまだありません。保存するときに、それまでに入った分を自動で取り込みます。');
+          notice(head + t.date + ' の活動(活動履歴・案件・ネタリスト・予定)はまだありません。保存するときに、それまでに入った分を自動で取り込みます。');
         }
         return;
       }
       recApi().set(latest);
       var msg = summary(o) + '\n\n時間帯・区分・金額を確認し、上の「今日の数字」も見直してから保存してください。';
       if (manual) window.alert('取り込みました:\n' + msg);
-      else notice('今日の活動を自動で取り込みました:\n' + msg);
+      else notice(head + t.date + ' の活動を自動で取り込みました:\n' + msg);
     }).catch(function (e) {
       console.error(e);
       if (manual) window.alert('取り込みに失敗しました。時間をおいて再度お試しください。');
@@ -491,7 +555,31 @@
     }
     // 新しい日報は開いたら自動で取り込む。編集は印だけ覚える(表示が終わってから動かす)
     var isCreate = event.type.indexOf('create') >= 0;
-    setTimeout(function () { if (isCreate) importNow(false); else rememberOnly(); }, 0);
+    imported = null;
+    // 朝6時前に開いたら前日の日報にする(夜中に前日分を書くと、当日の日付で前日の記録を取り込んでいたため)
+    var lead = '';
+    if (isCreate && event.record['日付'] && workDay() !== ymd(new Date()) && fv(event.record, '日付', '') === ymd(new Date())) {
+      event.record['日付'].value = workDay();
+      lead = '朝6時前なので、日付を前日(' + workDay() + ')にしました。今日の日報なら日付を直してください(取り込み直します)。';
+    }
+    setTimeout(function () { if (isCreate) importNow(false, lead); else rememberOnly(); }, 0);
+    return event;
+  });
+
+  // 日付・報告者を変えたとき: 作成画面では、前の日付で取り込んだ行と件数を外して取り込み直す。
+  // 編集画面は取り込みをしていないので、保存時に足す基準(seen)だけ新しい日付で取り直す
+  kintone.events.on(['app.record.create.change.日付', 'app.record.create.change.報告者',
+    'mobile.app.record.create.change.日付', 'mobile.app.record.create.change.報告者',
+    'app.record.edit.change.日付', 'app.record.edit.change.報告者',
+    'mobile.app.record.edit.change.日付', 'mobile.app.record.edit.change.報告者'], function (event) {
+    detectEnv(event);
+    var isCreate = event.type.indexOf('create') >= 0;
+    seen = null;
+    var removed = isCreate && undoImported(event.record);
+    setTimeout(function () {
+      if (isCreate) importNow(false, removed ? '日付・報告者が変わったので、前に取り込んだ行と件数を外して取り込み直しました。' : '');
+      else rememberOnly();
+    }, 0);
     return event;
   });
 

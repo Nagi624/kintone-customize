@@ -318,7 +318,7 @@
     var me = myStats(), team = teamStats();
     var lvName = LEVELS[me.lv][1], next = LEVELS[me.lv + 1];
     var pct = next ? Math.round((me.xp - LEVELS[me.lv][0]) / (next[0] - LEVELS[me.lv][0]) * 100) : 100;
-    var h = '<div class="dj-hero"><div><h2>📞 架電トラブル道場</h2><p>電話の「困った」を、選んで覚える。1回3〜5分。</p></div>'
+    var h = '<div class="dj-hero"><div><h2>📞 架電トラブル道場</h2><p>架電の「困った」を、選んで覚える。1回3〜5分。</p></div>'
       + '<div class="dj-lv"><div>Lv.' + (me.lv + 1) + ' <b>' + esc(lvName) + '</b>' + (me.streak ? ' 　🔥' + me.streak + '日連続' : '') + '</div>'
       + '<div class="dj-bar"><i style="width:' + pct + '%"></i></div>'
       + '<div style="font-size:11px;margin-top:4px">経験値 ' + me.xp.toLocaleString() + (next ? ' / 次のレベルまで ' + (next[0] - me.xp).toLocaleString() : '(最高レベル)') + '</div></div></div>';

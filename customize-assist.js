@@ -66,7 +66,7 @@
       if (!fv(r, '大分類', '')) miss.push('<b>大分類(業種)</b> — 業種別のグラフ・架電リストの学習に使います');
       if (fv(r, '顧客ランク', '') === 'D' && /仮置き|仮の/.test(fv(r, '顧客情報メモ欄', ''))) miss.push('<b>顧客ランク</b>が仮の「D」のまま — 取引の見込みに合わせて直してください');
       var nc = fv(r, '次回連絡日', '');
-      if (nc && nc <= today()) next.push('次回連絡日(' + md(nc) + ')になりました。電話して「📞 電話を記録」で残しましょう');
+      if (nc && nc <= today()) next.push('次回連絡日(' + md(nc) + ')になりました。架電して「📞 架電を記録」で残しましょう');
       return { miss: miss, next: next };
     },
     more: function (r, id) {
@@ -77,7 +77,7 @@
         count(APP.contact, '顧客No_ = "' + id + '"')
       ]).then(function (res) {
         var last = res[0], open = res[1], contacts = res[2], next = [];
-        if (!last) next.push('やりとりの記録がまだありません。電話したら上の「📞 電話を記録」、訪問したら「🚶 訪問を記録」で残しましょう');
+        if (!last) next.push('やりとりの記録がまだありません。架電したら上の「📞 架電を記録」、訪問したら「🚶 訪問を記録」で残しましょう');
         if (open) {
           open.forEach(function (d) {
             if (!fv(d, '次回商談日', '')) next.push('案件「' + esc(fv(d, '提案商品', '') || 'No.' + d.$id.value) + '」の次回商談日が未定です。「💼 案件を作る・進める」で入れるとスケジュールにも入ります');
@@ -86,7 +86,7 @@
           if (open.length && contacts === 0) next.push('先方の担当者が未登録です。名刺があれば「名刺読み取りボックス」、無ければ上の「担当者を登録する」から');
         }
         if (last && ['担当不在', 'ネタ', 'コールのみ'].indexOf(fv(last, 'コール業務', '')) >= 0 && !fv(r, '次回連絡日', '')) {
-          next.push('前回の電話は「' + esc(fv(last, 'コール業務', '')) + '」でした。次回連絡日を決めておくと「📞 今日かけ直す顧客」に出ます');
+          next.push('前回の架電は「' + esc(fv(last, 'コール業務', '')) + '」でした。次回連絡日を決めておくと「📞 今日かけ直す顧客」に出ます');
         }
         return { miss: [], next: next };
       });
@@ -143,7 +143,7 @@
       var last = rows.length ? fv(rows[rows.length - 1].value, '履歴結果', '') : '';
       var nc = fv(r, '次回架電予定日', '');
       if (mode === 'detail') {
-        if (!rows.length) next.push('電話・飛び込みをしたら、上の「📞 架電を記録」「🚶 訪問を記録」で残しましょう');
+        if (!rows.length) next.push('架電・飛び込みをしたら、上の「📞 架電を記録」「🚶 訪問を記録」で残しましょう');
         if (last === '獲得') next.push('アポ獲得です。「📅 アポを予定に登録」のあと「顧客管理へ登録」で顧客と履歴を移しましょう');
         if (['ネタ', '不通・不在', '架電済み'].indexOf(last) >= 0 && !nc) next.push('前回は「' + esc(last) + '」でした。次回架電予定日を入れると、その日の架電リストで優先されます');
         if (nc && nc <= today() && last !== '獲得' && last !== '失注') next.push('かけ直しの日(' + md(nc) + ')になりました');

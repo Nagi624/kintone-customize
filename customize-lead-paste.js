@@ -1,9 +1,12 @@
 /*
  * ネタリスト(app29) 一覧画面「📋 Googleマップから貼り付けて登録」  PC/スマホ両対応(2026-10-16)
  *
- * Googleマップでコピーした文字(スマホのアプリの「共有」→コピーはURLだけ。その場合はリンク先から店名、位置から住所を補う)を貼ると、店名・電話・〒・都道府県・市区町村・丁目番地等・URLを
+ * Googleマップでコピーした文字(スマホのアプリの「共有」→コピーはURLだけ。その場合はリンク先から店名、位置から住所を補う)を貼ると、店名・電話番号・〒・都道府県・市区町村・丁目番地等・URLを
  * 読み取ってネタを1件登録する(読み取り・重複チェックは customize-maps-paste.js と共用。同じアプリに登録が必要)。
- * - 電話した場合は結果も選べる → 架電履歴に1行(日付=今日・時刻・担当=自分・種別=電話)。選ばなければ未着手で登録
+ * - 「📞 架電した/🚶 訪問した/まだ」を選ぶ(2026-10-21。顧客管理の「📍 Googleマップからお店を登録」と同じ形。前回選んだ方が初期値)
+ *   - 架電した: 結果も選べる → 架電履歴に1行(日付・時刻・担当=自分・種別=架電)。選ばなければ未着手で登録。失注なら進捗状況も失注
+ *   - 訪問した: ネタを登録してネタの画面を開き、「🚶 訪問を記録」を自動で開く(今日の訪問予定の完了などは customize-schedule-links.js と同じ)
+ *   日付は朝6時前なら前日が初期値(夜中に前日分を入れたとき、当日の記録にならないように)。今日以外の日は時刻を空にする
  * - 顧客管理・ネタリストに同じお店(会社名か電話番号)があれば登録させず、そちらを案内する
  * - 確認ステータス=稼働中・確認者=自分・業種確認メモ「Googleマップから登録」。座標は毎時の自動処理で入る
  * - GoogleのAPIは使わない(取得値は規約で30日を超えて保存できない。利用者が貼った文字だけを読む)
@@ -22,6 +25,15 @@
   function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function today() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  // 記録する日の初期値(朝6時前は前日)
+  function workDay() {
+    var d = new Date();
+    if (d.getHours() < 6) d.setDate(d.getDate() - 1);
+    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  }
+  var MODE_KEY = 'lp-mode'; // 前回選んだ「架電/訪問」(人ごと・端末ごと)
+  function loadMode() { try { return localStorage.getItem(MODE_KEY) === 'visit' ? 'visit' : 'call'; } catch (e) { return 'call'; } }
+  function saveMode(v) { try { localStorage.setItem(MODE_KEY, v); } catch (e) { /* 次回は架電から */ } }
   function nowHm() { var d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
   function esc(s) {
     return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function (c) {
@@ -50,6 +62,8 @@
       '.lp-results{display:flex;flex-wrap:wrap;gap:6px}',
       '.lp-results button{padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:13px}',
       '.lp-results button.on{background:#1e293b;color:#fff;border-color:#1e293b}',
+      '.lp-mode{display:flex;flex-wrap:wrap;gap:6px}.lp-mode button{padding:7px 12px;border:1px solid #cbd5e1;border-radius:16px;background:#fff;cursor:pointer;font-size:13px}',
+      '.lp-mode button.on{background:#2563eb;border-color:#2563eb;color:#fff}',
       '.lp-btns{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}',
       '.lp-btns button{padding:9px 16px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer;font-size:14px}',
       '.lp-btns button.primary{border-color:#2563eb;background:#2563eb;color:#fff}.lp-btns button:disabled{opacity:.5}'
@@ -64,6 +78,8 @@
     var m = document.createElement('div');
     m.className = 'lp-modal';
     m.innerHTML = '<h3>📋 Googleマップから貼り付けて登録</h3>' +
+      '<label style="margin-top:0">このお店に</label><div class="lp-mode"><button type="button" data-mode="call">📞 架電した</button>' +
+      '<button type="button" data-mode="visit">🚶 訪問した</button><button type="button" data-mode="none">まだ(登録だけ)</button></div>' +
       '<div class="lp-sub">Googleマップでお店を開き、店名〜電話番号の部分をコピー(スマホ・iPadは「共有」→コピー)して貼り付けると読み取ります。手で入れても直してもかまいません。</div>' +
       '<textarea class="p-paste" placeholder="ここに貼り付け(URLだけでも可)" style="min-height:64px"></textarea><div class="p-note lp-sub" style="margin:6px 0 0"></div>' +
       '<label>会社名・店名(必須)</label><input type="text" class="p-name">' +
@@ -73,14 +89,38 @@
       '<label>丁目番地等</label><input type="text" class="p-rest">' +
       '<label>GoogleマップのURL(あれば)</label><input type="url" class="p-url">' +
       '<div class="p-dup"></div>' +
-      '<div class="lp-box"><b>電話した場合だけ</b>:結果を選ぶと架電履歴にも残ります(選ばなければ「未着手」で登録)' +
+      '<div class="lp-box p-callbox"><b>架電の結果</b>:選ぶと架電履歴にも残ります(選ばなければ「未着手」で登録)' +
+      '<label>架電した日</label><input type="date" class="p-date"><div class="p-date-note lp-sub" style="margin:4px 0 0;color:#b45309"></div>' +
       '<div class="lp-results" style="margin-top:8px"></div>' +
+      '<div class="p-lose lp-sub" style="display:none;margin:6px 0 0;color:#991b1b">失注: 進捗状況を「失注」で登録し、架電リストに出しません。次回架電予定日は入れません。</div>' +
       '<label>メモ</label><input type="text" class="p-memo">' +
       '<label>次回架電予定日(またかけるとき)</label><input type="date" class="p-next"></div>' +
+      '<div class="lp-box p-visitbox" style="display:none">登録するとネタの画面が開き、続けて「🚶 訪問を記録」が開きます(訪問した日・結果・メモはそこで入れます。今日の訪問予定があれば、その予定の訪問として記録できます)。</div>' +
       '<div class="lp-btns"><button type="button" class="p-cancel">キャンセル</button><button type="button" class="primary p-save">登録</button></div>';
     bg.appendChild(m);
     document.body.appendChild(bg);
     var $ = function (c) { return m.querySelector(c); };
+
+    var mode = loadMode();
+    function setMode(v) {
+      mode = v;
+      [].forEach.call(m.querySelectorAll('.lp-mode button'), function (b) { b.classList.toggle('on', b.getAttribute('data-mode') === v); });
+      $('.p-callbox').style.display = v === 'call' ? '' : 'none';
+      $('.p-visitbox').style.display = v === 'visit' ? '' : 'none';
+      $('.p-save').textContent = v === 'call' ? '登録して架電を記録' : v === 'visit' ? '登録して訪問を記録' : '登録';
+    }
+    [].forEach.call(m.querySelectorAll('.lp-mode button'), function (b) {
+      b.addEventListener('click', function () { setMode(b.getAttribute('data-mode')); if (mode !== 'none') saveMode(mode); });
+    });
+    setMode(mode);
+    var dateIn = $('.p-date');
+    dateIn.value = workDay();
+    function dateNote() {
+      var v = dateIn.value;
+      $('.p-date-note').textContent = !v || v === today() ? '' : v < today() ? '※ ' + v + ' の分として記録します(日報もその日に入ります)' : '※ 未来の日付になっています';
+    }
+    dateIn.addEventListener('change', dateNote);
+    dateNote();
 
     var chosen = '';
     var box = $('.lp-results');
@@ -91,6 +131,9 @@
       b.addEventListener('click', function () {
         chosen = chosen === v ? '' : v; // もう一度押すと選択を外す
         [].forEach.call(box.children, function (x) { x.classList.toggle('on', x.textContent === chosen); });
+        $('.p-lose').style.display = chosen === '失注' ? 'block' : 'none';
+        $('.p-next').disabled = chosen === '失注';
+        if (chosen === '失注') $('.p-next').value = '';
       });
       box.appendChild(b);
     });
@@ -133,7 +176,7 @@
         if (my !== seq) return;
         var h = '';
         if (res[0].length) h += 'ネタリストに同じお店があります: <a href="' + recUrl(LEAD_APP_ID, res[0][0].$id.value) + '">ネタNo.' + esc(res[0][0].$id.value) + ' ' + esc(fv(res[0][0], '会社名', '')) + '</a>(そちらで「📞 架電を記録」してください)<br>';
-        if (res[1].length) h += '顧客管理に同じお店があります: <a href="' + recUrl(CUSTOMER_APP_ID, res[1][0].$id.value) + '">顧客No.' + esc(res[1][0].$id.value) + ' ' + esc(fv(res[1][0], '会社名', '')) + '</a>(そちらで「📞 電話を記録」してください)';
+        if (res[1].length) h += '顧客管理に同じお店があります: <a href="' + recUrl(CUSTOMER_APP_ID, res[1][0].$id.value) + '">顧客No.' + esc(res[1][0].$id.value) + ' ' + esc(fv(res[1][0], '会社名', '')) + '</a>(そちらで「📞 架電を記録」してください)';
         blocked = !!h;
         $('.p-dup').innerHTML = h ? '<div class="lp-box lp-warn">' + h + '</div>' : '';
       });
@@ -147,6 +190,8 @@
       var btn = this;
       var name = $('.p-name').value.trim();
       if (!name) { alert('会社名・店名を入れてください'); return; }
+      var res = mode === 'call' ? chosen : ''; // 架電の結果は「架電した」のときだけ使う
+      var day = dateIn.value || workDay();
       btn.disabled = true;
       clearTimeout(timer);
       var me = kintone.getLoginUser();
@@ -156,26 +201,34 @@
           会社名: { value: name },
           確認ステータス: { value: '稼働中' },
           確認者: { value: [{ code: me.code }] },
-          業種確認メモ: { value: 'Googleマップから登録(' + today() + ')' },
-          進捗状況: { value: chosen === '失注' ? '失注' : chosen ? '架電済み' : '未着手' }
+          業種確認メモ: { value: 'Googleマップから登録(' + today() + (mode === 'visit' ? '・訪問' : '') + ')' },
+          進捗状況: { value: res === '失注' ? '失注' : res ? '架電済み' : '未着手' }
         };
         var vals = {
           電話番号: $('.p-phone').value.trim(), 郵便番号: $('.p-zip').value.trim(), 都道府県: $('.p-pref').value.trim(),
           市区町村: $('.p-city').value.trim(), 丁目番地等: MP().toWideAddr($('.p-rest').value.trim()),
-          大分類: $('.p-cat').value, 中分類選択: $('.p-sub').value, GoogleマップURL: $('.p-url').value.trim(), 次回架電予定日: $('.p-next').value
+          大分類: $('.p-cat').value, 中分類選択: $('.p-sub').value, GoogleマップURL: $('.p-url').value.trim(), 次回架電予定日: mode === 'call' && res !== '失注' ? $('.p-next').value : ''
         };
         Object.keys(vals).forEach(function (k) { if (vals[k] && (props[k] || !Object.keys(props).length)) rec[k] = { value: vals[k] }; });
-        if (chosen) {
+        if (res) {
           rec.架電履歴 = { value: [{ value: {
-            履歴日付: { value: today() }, 履歴時刻: { value: nowHm() }, 履歴種別: { value: '電話' },
-            履歴担当: { value: [{ code: me.code }] }, 履歴結果: { value: chosen }, 履歴メモ: { value: $('.p-memo').value.trim() }
+            // 今日以外の日の分は、記録した時刻が当てにならないので時刻を空にする
+            履歴日付: { value: day }, 履歴時刻: { value: day === today() ? nowHm() : '' }, 履歴種別: { value: '架電' },
+            履歴担当: { value: [{ code: me.code }] }, 履歴結果: { value: res }, 履歴メモ: { value: $('.p-memo').value.trim() }
           } }] };
-          if (chosen === '獲得') rec.アポ獲得者 = { value: [{ code: me.code }] };
+          if (res === '獲得') rec.アポ獲得者 = { value: [{ code: me.code }] };
         }
         return api('/k/v1/record', 'POST', { app: LEAD_APP_ID, record: rec });
       }).then(function (resp) {
         close();
-        if (chosen === '獲得') {
+        if (mode === 'visit') {
+          // 訪問の記録はネタの画面の「🚶 訪問を記録」で行う(開いたら自動で出す。customize-schedule-links.js)
+          try { sessionStorage.setItem('lead-open-visit', String(resp.id)); } catch (e) { /* 手で押してもらう */ }
+          alert('ネタリストに登録しました(ネタNo.' + resp.id + ')。続けて訪問の内容を記録してください。');
+          location.href = recUrl(LEAD_APP_ID, resp.id);
+          return;
+        }
+        if (res === '獲得') {
           alert('アポ獲得として登録しました。ネタの画面で「📅 アポを予定に登録」→「顧客管理へ登録」に進んでください。');
           location.href = recUrl(LEAD_APP_ID, resp.id);
           return;
