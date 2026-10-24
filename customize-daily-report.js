@@ -43,6 +43,12 @@
  *   - 作成画面で日付・報告者を変えたら、それまでに自動で取り込んだ行と件数を外して、新しい日付で取り込み直す
  *   - 後日に入力した活動履歴(作成日≠対応日付)は作成時刻が当てにならないので、時間帯は午後として数える
  *
+ * 基準日(2026-10-24。0時を過ぎてから取り込むと前日の日報の中身が変わることがあったため):
+ *   - 検索の基準は日報の「日付」だけ。日付フィールド(対応日付・履歴日付)はその値のまま、時刻を含むフィールド
+ *     (作成日時・更新日時・開始日時)は日本時間のその日 0:00〜翌日 0:00 で探す。いつ取り込んでも同じ対象になる
+ *   - 午前/午後・日付の判定は端末のタイムゾーンに関係なく日本時間で行う
+ *   - 案件は作成日時でも探す(更新日時だけだと、0時以降に案件を直したとき前日の新規登録が取り込めなくなっていた)
+ *
  * 架電の種別(2026-10-21): 活動履歴の対応種別・ネタリストの種別の「電話」は「架電」に改名。過去の値も読めるよう両方を架電として扱う
  *
  * 二重取り込み防止: 内容の先頭に [履歴No.X] [案件No.X] [ネタNo.X-行ID] [ネタ新規] [予定No.X] の印を付け、既にある印はスキップする
@@ -81,31 +87,53 @@
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }
 
-  function nextDay(dateStr) {
+  // ---- 日付・時刻(2026-10-24) ----
+  // 取り込みの基準日は日報の「日付」(YYYY-MM-DD)だけ。現在日時は、新しい日報の日付の初期値(workDay)にしか使わない。
+  // 時刻は端末のタイムゾーンに関係なく日本時間で読む(new Date の getHours/getDate は端末の時間帯になるため使わない)
+  var JST_OFFSET = 9 * 60 * 60 * 1000;
+
+  // 日時(UTC文字列 or ミリ秒)を日本時間の {date: 'YYYY-MM-DD', hour, minute} に
+  function jst(t) {
+    var d = new Date((typeof t === 'number' ? t : Date.parse(t)) + JST_OFFSET);
+    return { date: d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate()),
+      hour: d.getUTCHours(), minute: d.getUTCMinutes() };
+  }
+
+  // 'YYYY-MM-DD' の日付計算(時刻・時間帯を持ち込まないよう UTC の暦で計算する)
+  function dateUtc(dateStr) {
     var p = dateStr.split('-');
-    var d = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]) + 1);
-    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+    return new Date(Date.UTC(Number(p[0]), Number(p[1]) - 1, Number(p[2])));
+  }
+  function nextDay(dateStr) {
+    var d = dateUtc(dateStr);
+    d.setUTCDate(d.getUTCDate() + 1);
+    return d.getUTCFullYear() + '-' + pad(d.getUTCMonth() + 1) + '-' + pad(d.getUTCDate());
+  }
+  function weekday(dateStr) { return dateUtc(dateStr).getUTCDay(); }
+
+  // 時刻を含むフィールド(作成日時・更新日時・DATETIME)を、日本時間のその日 0:00〜翌日 0:00 で絞る条件
+  function onDateQuery(field, dateStr) {
+    return field + ' >= "' + dateStr + 'T00:00:00+09:00" and ' + field + ' < "' + nextDay(dateStr) + 'T00:00:00+09:00"';
   }
 
   // DATETIME(UTC文字列)が、日本時間でその日かどうか
   function isOnDate(iso, dateStr) {
-    if (!iso) return false;
-    var d = new Date(iso);
-    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) === dateStr;
+    return !!iso && jst(iso).date === dateStr;
   }
 
   // 日時(UTC文字列)を日本時間の午前/午後に
   function ampm(iso) {
     if (!iso) return null;
-    return new Date(iso).getHours() < 12 ? '午前' : '午後';
+    return jst(iso).hour < 12 ? '午前' : '午後';
   }
 
-  function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-  // 営業日としての今日(朝6時前は前日)
+  // 日本時間の今日の日付
+  function todayJst() { return jst(Date.now()).date; }
+  // 営業日としての今日(日本時間の朝6時前は前日)。新しい日報の日付の初期値にだけ使う
   function workDay() {
-    var d = new Date();
-    if (d.getHours() < DAY_START_HOUR) d.setDate(d.getDate() - 1);
-    return ymd(d);
+    var now = jst(Date.now());
+    if (now.hour >= DAY_START_HOUR) return now.date;
+    return jst(Date.now() - 24 * 60 * 60 * 1000).date;
   }
 
   function shorten(s, len) {
@@ -200,8 +228,10 @@
   }
 
   function fromDeals(codes, date, selfId) {
-    var q = '(作成者 in (' + codes + ') or 更新者 in (' + codes + ')) and 更新日時 >= "' + date +
-      'T00:00:00+09:00" and 更新日時 < "' + nextDay(date) + 'T00:00:00+09:00" order by 案件No_ asc';
+    // その日に登録した案件は、後日(日付が変わった後など)に更新されても拾えるよう、作成日時でも探す(2026-10-24。
+    // 以前は更新日時だけで探していたため、0時を過ぎてから案件を直すと、前日の日報から新規登録の行が消えていた)
+    var q = '(作成者 in (' + codes + ') or 更新者 in (' + codes + ')) and ((' + onDateQuery('作成日時', date) +
+      ') or (' + onDateQuery('更新日時', date) + ')) order by 案件No_ asc';
     return getAll(APP.deal, q).then(function (recs) {
       return Promise.all(recs.map(function (d) {
         var no = fv(d, '案件No_', '');
@@ -230,8 +260,7 @@
   // ---- 3. ネタリスト ----
   function fromLeads(userCodes, codes, date) {
     var callQ = '履歴日付 >= "' + date + '" and 履歴日付 <= "' + date + '" and 履歴担当 in (' + codes + ')';
-    var newQ = '作成者 in (' + codes + ') and 作成日時 >= "' + date + 'T00:00:00+09:00" and 作成日時 < "' +
-      nextDay(date) + 'T00:00:00+09:00" order by レコード番号 asc';
+    var newQ = '作成者 in (' + codes + ') and ' + onDateQuery('作成日時', date) + ' order by レコード番号 asc';
     return Promise.all([getAll(APP.lead, callQ), getAll(APP.lead, newQ)]).then(function (res) {
       var items = [];
       var called = {};
@@ -275,16 +304,15 @@
 
   // ---- 4. スケジュール ----
   var WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
-  function hm(d) { return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  // 日時(UTC文字列)を日本時間の HH:MM に
+  function hm(iso) { var t = jst(iso); return pad(t.hour) + ':' + pad(t.minute); }
   function dayRangeQuery(codes, date) {
-    return '参加者 in (' + codes + ') and 元予定No = "" and 開始日時 >= "' + date + 'T00:00:00+09:00" and 開始日時 < "' +
-      nextDay(date) + 'T00:00:00+09:00"';
+    return '参加者 in (' + codes + ') and 元予定No = "" and ' + onDateQuery('開始日時', date);
   }
   function nextBusinessDay(date) {
     var d = nextDay(date);
     for (var i = 0; i < 7; i++) {
-      var p = d.split('-');
-      var w = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2])).getDay();
+      var w = weekday(d);
       if (w !== 0 && w !== 6) return d;
       d = nextDay(d);
     }
@@ -299,8 +327,8 @@
     return Promise.all([getAll(APP.schedule, q), getAll(APP.schedule, tq)]).then(function (res) {
       var out = { items: [], am: 0, pm: 0, plan: '', ok: true, linked: [], linkedTime: {} };
       res[0].forEach(function (r) {
-        var s = new Date(fv(r, '開始日時', ''));
-        var time = s.getHours() < 12 ? '午前' : '午後';
+        var s = fv(r, '開始日時', '');
+        var time = ampm(s);
         var st = fv(r, '実施状況', '予定');
         var visit = fv(r, '種類', '') === '訪問' && st !== '中止';
         if (visit) { if (time === '午前') out.am++; else out.pm++; }
@@ -319,14 +347,13 @@
         } });
       });
       var p = tomorrow.split('-');
-      var td = new Date(Number(p[0]), Number(p[1]) - 1, Number(p[2]));
       var lines = res[1].filter(function (r) { return fv(r, '実施状況', '予定') !== '中止'; }).map(function (r) {
-        var s = new Date(fv(r, '開始日時', ''));
+        var s = fv(r, '開始日時', '');
         var allDay = fv(r, '終日', []).indexOf('終日') >= 0;
         var company = fv(r, '会社名', '') || fv(r, 'ネタ会社名', '');
         return '・' + (allDay ? '終日' : hm(s)) + ' ' + fv(r, '種類', '') + ' ' + fv(r, '件名', '') + (company ? '(' + company + ')' : '');
       });
-      if (lines.length) out.plan = '【翌営業日の予定 ' + (td.getMonth() + 1) + '/' + td.getDate() + '(' + WEEKDAYS[td.getDay()] + ')】\n' + lines.join('\n');
+      if (lines.length) out.plan = '【翌営業日の予定 ' + Number(p[1]) + '/' + Number(p[2]) + '(' + WEEKDAYS[weekday(tomorrow)] + ')】\n' + lines.join('\n');
       return out;
     }).catch(function (e) {
       console.warn('スケジュールを取り込めませんでした', e);
@@ -558,7 +585,8 @@
     imported = null;
     // 朝6時前に開いたら前日の日報にする(夜中に前日分を書くと、当日の日付で前日の記録を取り込んでいたため)
     var lead = '';
-    if (isCreate && event.record['日付'] && workDay() !== ymd(new Date()) && fv(event.record, '日付', '') === ymd(new Date())) {
+    // 取り込みは日付欄の値だけを基準にするので、現在日時を見るのはこの初期値の補正だけ
+    if (isCreate && event.record['日付'] && workDay() !== todayJst() && fv(event.record, '日付', '') === todayJst()) {
       event.record['日付'].value = workDay();
       lead = '朝6時前なので、日付を前日(' + workDay() + ')にしました。今日の日報なら日付を直してください(取り込み直します)。';
     }
