@@ -32,6 +32,8 @@
  * 貼り付けの読み取り・重複チェックは customize-maps-paste.js(同じアプリに登録が必要。ネタリストと共用)。
  * 置き場所: フォームのスペース(要素ID customer_hub)。無ければヘッダーの空き(PCはメニュー横・スマホはヘッダー)に出す。
  * 前提の欄: 活動履歴17「コール業務」(ドロップダウン)、顧客管理18「次回連絡日」(日付)・「GoogleマップURL」(リンク)。無い場合はその部分を出さない。
+ * 受注日(2026-10-24): 訪問の記録・案件を作る/進めるで商談フェーズを受注にしたら、案件19の「受注日」が空のときだけ
+ *   訪問した日(案件のダイアログは今日。朝6時前は前日)を入れる(setWonDate)
  */
 (function () {
   'use strict';
@@ -75,6 +77,10 @@
     return ymd(d);
   }
   function nextYmd(s) { var d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + 1); return ymd(d); }
+  // 商談フェーズを受注にしたら、受注日が空のときだけ day を入れる(2026-10-24。日報の受注の取り込みと受注の集計に使う)
+  function setWonDate(upd, deal, phase, day) {
+    if (phase === '受注' && (!deal || (fv(deal, '商談フェーズ', '') !== '受注' && !fv(deal, '受注日', '')))) upd.受注日 = { value: day };
+  }
   // 日付の入力欄。今日でなければ注意を出す
   function dateNote(input, note) {
     function upd() {
@@ -187,7 +193,7 @@
     var q = function (p) { return p.catch(function () { return { records: [] }; }); };
     return kintone.Promise.all([
       q(api('/k/v1/records', 'GET', { app: DEAL_APP_ID, query: '顧客No_ = "' + custNo + '" order by 案件No_ desc limit 50',
-        fields: ['$id', '案件No_', '案件名', '会社名', '顧客No_', '提案商品', '商談フェーズ', '確度', '次回商談日', '受注予定日', '売上', '主担当', '商談担当者', 'アポ獲得者'] })),
+        fields: ['$id', '案件No_', '案件名', '会社名', '顧客No_', '提案商品', '商談フェーズ', '確度', '次回商談日', '受注予定日', '受注日', '売上', '主担当', '商談担当者', 'アポ獲得者'] })),
       q(api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, query: '顧客No = "' + custNo + '" order by 対応日付 desc, $id desc limit 6',
         fields: ['$id', '対応日付', '対応種別', 'コール業務', '対応者', '内容', 'タイトル'] })),
       q(api('/k/v1/records', 'GET', { app: CONTACT_APP_ID, query: '顧客No_ = "' + custNo + '" limit 20',
@@ -687,7 +693,10 @@
         var deal = dealOf(dealSel.value);
         var msgs = [];
         var upd = {};
-        if (deal && $('.v-phase').value && $('.v-phase').value !== fv(deal, '商談フェーズ', '')) upd.商談フェーズ = { value: $('.v-phase').value };
+        if (deal && $('.v-phase').value && $('.v-phase').value !== fv(deal, '商談フェーズ', '')) {
+          upd.商談フェーズ = { value: $('.v-phase').value };
+          setWonDate(upd, deal, $('.v-phase').value, today); // 訪問した日を受注日に
+        }
         if (deal && $('.v-kakudo').value && $('.v-kakudo').value !== fv(deal, '確度', '')) upd.確度 = { value: $('.v-kakudo').value };
         var next = hasNext ? $('.v-next').value : '';
         var actId = null;
@@ -807,6 +816,7 @@
         次回商談日: { value: next || null }, 受注予定日: { value: m.querySelector('.d-due').value || null },
         売上: { value: amount === '' ? null : amount }, 商談担当者: { value: users(picked) }
       };
+      setWonDate(rec, current, phase, workDay());
       var prev = current ? fv(current, '次回商談日', '') : '';
       var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
       btn.disabled = true;

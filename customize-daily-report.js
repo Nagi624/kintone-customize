@@ -12,6 +12,7 @@
  *    取り込むのは その日新規登録(失注以外)→見込み と 受注→受注(金額=売上) だけ(2026-10-20)。
  *    それ以外の更新(管理者の一括修正・軽い編集も拾っていた)は取り込まない。商談の中身は活動履歴・予定から入る。
  *    受注は、別の日報で同じ案件の受注を報告済みなら取り込まない(二重計上しない)
+ *    受注は「受注日」がその日の案件(2026-10-24〜。作成者・更新者・主担当=報告者)。受注日が空の古い案件だけ更新日時で判定する
  * 3. ネタリスト(app29):
  *    a. 架電履歴の行のうち 日付=日付 かつ 担当=報告者
  *       結果 獲得→アポ獲得 / ネタ→見込み / それ以外→架電(種別が飛び込みなら訪問)
@@ -48,6 +49,7 @@
  *     (作成日時・更新日時・開始日時)は日本時間のその日 0:00〜翌日 0:00 で探す。いつ取り込んでも同じ対象になる
  *   - 午前/午後・日付の判定は端末のタイムゾーンに関係なく日本時間で行う
  *   - 案件は作成日時でも探す(更新日時だけだと、0時以降に案件を直したとき前日の新規登録が取り込めなくなっていた)
+ *   - 受注は案件の「受注日」で判定する(受注した案件を後日直しても、受注した日の日報に入る)
  *
  * 架電の種別(2026-10-21): 活動履歴の対応種別・ネタリストの種別の「電話」は「架電」に改名。過去の値も読めるよう両方を架電として扱う
  *
@@ -227,20 +229,27 @@
     return getAll(IS_MOBILE ? kintone.mobile.app.getId() : kintone.app.getId(), q).then(function (recs) { return recs.length > 0; });
   }
 
-  function fromDeals(codes, date, selfId) {
+  function fromDeals(userCodes, codes, date, selfId) {
     // その日に登録した案件は、後日(日付が変わった後など)に更新されても拾えるよう、作成日時でも探す(2026-10-24。
     // 以前は更新日時だけで探していたため、0時を過ぎてから案件を直すと、前日の日報から新規登録の行が消えていた)
-    var q = '(作成者 in (' + codes + ') or 更新者 in (' + codes + ')) and ((' + onDateQuery('作成日時', date) +
-      ') or (' + onDateQuery('更新日時', date) + ')) order by 案件No_ asc';
+    // 受注は受注日(2026-10-24新設)がその日の案件。後日だれかが直して更新者が変わっても拾えるよう、主担当でも探す
+    var q = '((作成者 in (' + codes + ') or 更新者 in (' + codes + ')) and ((' + onDateQuery('作成日時', date) +
+      ') or (' + onDateQuery('更新日時', date) + '))) or ((作成者 in (' + codes + ') or 更新者 in (' + codes +
+      ') or 主担当 in (' + codes + ')) and 受注日 = "' + date + '") order by 案件No_ asc';
+    function mine(d, code) { return userCodes.indexOf((fv(d, code, {}) || {}).code) !== -1; }
     return getAll(APP.deal, q).then(function (recs) {
       return Promise.all(recs.map(function (d) {
         var no = fv(d, '案件No_', '');
         var phase = fv(d, '商談フェーズ', '');
         var isNew = isOnDate(fv(d, '作成日時', ''), date);
+        var wonDate = fv(d, '受注日', '');
         var detail = (isNew ? '新規登録' : '更新') + ' フェーズ:' + (phase || '-') +
           (fv(d, '提案商品', '') ? ' 商品:' + fv(d, '提案商品', '') : '');
-        var base = { company: fv(d, '会社名', ''), dealNo: no, time: ampm(fv(d, isNew ? '作成日時' : '更新日時', '')) };
-        if (phase === '受注') {
+        var timeAt = fv(d, isNew ? '作成日時' : '更新日時', '');
+        // 時刻の分からない受注(その日の後に直された案件)は時間帯を空にする
+        var base = { company: fv(d, '会社名', ''), dealNo: no, time: isOnDate(timeAt, date) ? ampm(timeAt) : null };
+        // 受注日がある案件は受注日の日報だけで受注にする。空(受注日の新設前)はその日に作成・更新された受注
+        if (phase === '受注' && (!wonDate || wonDate === date)) {
           return alreadyReportedWon(no, selfId).then(function (reported) {
             if (reported) return null; // 別の日報で報告済み
             base.kubun = '受注';
@@ -249,7 +258,8 @@
             return { mark: '[案件No.' + no + ' 受注]', row: base };
           });
         }
-        if (!isNew || phase === '失注') return null; // 新規以外の更新は取り込まない(2026-10-20)
+        // 新規以外の更新は取り込まない(2026-10-20)。主担当だけで見つかった他人の登録も見込みにはしない
+        if (!isNew || phase === '失注' || !(mine(d, '作成者') || mine(d, '更新者'))) return null;
         base.kubun = '見込み';
         base.memo = '[案件No.' + no + '] ' + detail;
         return { mark: '[案件No.' + no + ']', alt: '[案件No.' + no + ' 受注]', row: base };
@@ -366,7 +376,7 @@
     var codes = userCodes.map(function (c) { return '"' + c + '"'; }).join(',');
     return Promise.all([
       fromActivities(codes, date),
-      fromDeals(codes, date, selfId),
+      fromDeals(userCodes, codes, date, selfId),
       fromLeads(userCodes, codes, date),
       fromSchedule(codes, date)
     ]).then(function (all) {
