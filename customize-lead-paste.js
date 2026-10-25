@@ -6,7 +6,8 @@
  * - 「📞 架電した/🚶 訪問した/まだ」を選ぶ(2026-10-21。顧客管理の「📍 Googleマップからお店を登録」と同じ形。前回選んだ方が初期値)
  *   - 架電した: 結果も選べる → 架電履歴に1行(日付・時刻・担当=自分・種別=架電)。選ばなければ未着手で登録。失注なら進捗状況も失注
  *   - 訪問した: ネタを登録してネタの画面を開き、「🚶 訪問を記録」を自動で開く(今日の訪問予定の完了などは customize-schedule-links.js と同じ)
- *   日付は朝6時前なら前日が初期値(夜中に前日分を入れたとき、当日の記録にならないように)。今日以外の日は時刻を空にする
+ *   日付の初期値は日本時間の今日(2026-10-25 P1: 朝6時前でも前日にしない。前の日の分は利用者が選ぶ)。
+ *   日付欄の下に「何日の業務として記録するか」を常に出す(customize-business-date.js の renderNote)。今日以外の日は時刻を空にする
  * - 顧客管理・ネタリストに同じお店(会社名か電話番号)があれば登録させず、そちらを案内する
  * - 確認ステータス=稼働中・確認者=自分・業種確認メモ「Googleマップから登録」。座標は毎時の自動処理で入る
  * - GoogleのAPIは使わない(取得値は規約で30日を超えて保存できない。利用者が貼った文字だけを読む)
@@ -23,18 +24,17 @@
     return obj && obj[code] && obj[code].value !== undefined && obj[code].value !== null ? obj[code].value : fallback;
   }
   function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
-  function pad(n) { return (n < 10 ? '0' : '') + n; }
-  function today() { var d = new Date(); return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-  // 記録する日の初期値(朝6時前は前日)
-  function workDay() {
-    var d = new Date();
-    if (d.getHours() < 6) d.setDate(d.getDate() - 1);
-    return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+  // 日付・時刻は共通部品 customize-business-date.js(window.TaimeiDate)で日本時間に揃える(同じアプリに登録が必要)
+  function TD() {
+    if (!window.TaimeiDate) throw new Error('customize-business-date.js が読み込まれていません');
+    return window.TaimeiDate;
   }
+  // 日本時間の今日(記録する日の初期値。朝6時前でも前日にしない)
+  function today() { return TD().today(); }
   var MODE_KEY = 'lp-mode'; // 前回選んだ「架電/訪問」(人ごと・端末ごと)
   function loadMode() { try { return localStorage.getItem(MODE_KEY) === 'visit' ? 'visit' : 'call'; } catch (e) { return 'call'; } }
   function saveMode(v) { try { localStorage.setItem(MODE_KEY, v); } catch (e) { /* 次回は架電から */ } }
-  function nowHm() { var d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); }
+  function nowHm() { return TD().nowHm(); }
   function esc(s) {
     return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -114,11 +114,9 @@
     });
     setMode(mode);
     var dateIn = $('.p-date');
-    dateIn.value = workDay();
-    function dateNote() {
-      var v = dateIn.value;
-      $('.p-date-note').textContent = !v || v === today() ? '' : v < today() ? '※ ' + v + ' の分として記録します(日報もその日に入ります)' : '※ 未来の日付になっています';
-    }
+    dateIn.value = today();
+    // 何日の業務として記録するかを常に出す(日付は変えない。前の日の分は利用者が選ぶ)
+    function dateNote() { TD().renderNote($('.p-date-note'), dateIn.value, '時刻は空になります。'); }
     dateIn.addEventListener('change', dateNote);
     dateNote();
 
@@ -191,7 +189,7 @@
       var name = $('.p-name').value.trim();
       if (!name) { alert('会社名・店名を入れてください'); return; }
       var res = mode === 'call' ? chosen : ''; // 架電の結果は「架電した」のときだけ使う
-      var day = dateIn.value || workDay();
+      var day = dateIn.value || today();
       btn.disabled = true;
       clearTimeout(timer);
       var me = kintone.getLoginUser();

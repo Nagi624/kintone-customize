@@ -26,14 +26,19 @@
  *
  * 2026-10-21:
  * - 架電の結果に「失注」(はっきり断られた・今後かけない)。進行中の案件があれば一緒に失注にでき、次回連絡日は空にする
- * - 架電・訪問の記録に「日付」を付けた。朝6時前は前日を初期値にする(夜中に前日分を入れると当日の記録になり、日報が二重になっていたため)
+ * - 架電・訪問の記録に「日付」を付けた(夜中に前日分を入れると当日の記録になり、日報が二重になっていたため)
+ *
+ * 2026-10-25(P1 日付の正常化): 記録する日の初期値は日本時間の今日。朝6時前でも前日にしない(会社の日付ルール)。
+ *   日付欄の下に「何日の業務として記録するか」を常に出し、前の日の分は利用者が選ぶ。案件ダイアログで受注にするときは
+ *   「受注日(実際に受注した日)」を聞く。日付は共通部品 customize-business-date.js(window.TaimeiDate)で日本時間に揃える
+ *   受注日は必須・未来の日付は不可(空や未来なら保存しない)。訪問の日付はキーボードで打ち終わってから開き直す
  * - 対応種別の値は「電話」→「架電」(活動履歴17の選択肢も改名)
  *
  * 貼り付けの読み取り・重複チェックは customize-maps-paste.js(同じアプリに登録が必要。ネタリストと共用)。
  * 置き場所: フォームのスペース(要素ID customer_hub)。無ければヘッダーの空き(PCはメニュー横・スマホはヘッダー)に出す。
  * 前提の欄: 活動履歴17「コール業務」(ドロップダウン)、顧客管理18「次回連絡日」(日付)・「GoogleマップURL」(リンク)。無い場合はその部分を出さない。
  * 受注日(2026-10-24): 訪問の記録・案件を作る/進めるで商談フェーズを受注にしたら、案件19の「受注日」が空のときだけ
- *   訪問した日(案件のダイアログは今日。朝6時前は前日)を入れる(setWonDate)
+ *   訪問した日(案件のダイアログは「受注日」欄で選んだ日。初期値は日本時間の今日)を入れる(setWonDate)
  */
 (function () {
   'use strict';
@@ -57,8 +62,6 @@
     { v: '受付ブロック', hint: '受付で断られた・取り付く島もない' },
     { v: '失注', hint: 'はっきり断られた・今後かけない' }
   ];
-  // この時刻より前の記録は前日の分として日付の初期値を前日にする
-  var DAY_START_HOUR = 6;
   var CLOSED = ['受注', '失注', '保留/中止'];
   var WEEKDAYS = ['日', '月', '火', '水', '木', '金', '土'];
 
@@ -70,23 +73,20 @@
   function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
   function ymd(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-  // 記録する日の初期値(朝6時前は前日)
-  function workDay() {
-    var d = new Date();
-    if (d.getHours() < DAY_START_HOUR) d.setDate(d.getDate() - 1);
-    return ymd(d);
+  // 業務日は共通部品 customize-business-date.js(window.TaimeiDate)で日本時間に揃える(同じアプリに登録が必要)
+  function TD() {
+    if (!window.TaimeiDate) throw new Error('customize-business-date.js が読み込まれていません');
+    return window.TaimeiDate;
   }
-  function nextYmd(s) { var d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + 1); return ymd(d); }
+  // 記録する日の初期値: 日本時間の今日(2026-10-25 P1: 朝6時前でも前日にしない。前の日の分は利用者が日付欄で選ぶ)
+  function workDay() { return TD().today(); }
   // 商談フェーズを受注にしたら、受注日が空のときだけ day を入れる(2026-10-24。日報の受注の取り込みと受注の集計に使う)
   function setWonDate(upd, deal, phase, day) {
     if (phase === '受注' && (!deal || (fv(deal, '商談フェーズ', '') !== '受注' && !fv(deal, '受注日', '')))) upd.受注日 = { value: day };
   }
-  // 日付の入力欄。今日でなければ注意を出す
+  // 日付の入力欄。何日の業務として記録するかを常に出す(日付は変えない。決定1・案A)
   function dateNote(input, note) {
-    function upd() {
-      var v = input.value;
-      note.textContent = !v ? '' : v === ymd(new Date()) ? '' : v < ymd(new Date()) ? '※ ' + dLabel(v) + ' の分として記録します(日報もその日に入ります)' : '※ 未来の日付になっています';
-    }
+    function upd() { TD().renderNote(note, input.value); }
     input.addEventListener('change', upd);
     upd();
   }
@@ -351,7 +351,7 @@
     var nextCall = fv(r, '次回連絡日', '');
     h = '<h4>📌 次にやること</h4>';
     if (r['次回連絡日']) {
-      var lateCall = nextCall && nextCall < ymd(new Date());
+      var lateCall = nextCall && nextCall < TD().today();
       h += '<div class="chub-item">次回連絡日: ' + (nextCall ? '<span class="' + (lateCall ? 'chub-warn' : '') + '">' + dLabel(nextCall) + (lateCall ? '(過ぎています)' : '') + '</span>' : '<span class="chub-muted">未定</span>') + '</div>';
     }
     if (data.plans.length) {
@@ -530,7 +530,7 @@
         var rec = {
           会社名: { value: company }, 提案商品: { value: item }, 商談フェーズ: { value: '商談予定' }, 確度: { value: p.kakudo || '' },
           主担当: { value: [{ code: me.code }] }, 商談担当者: { value: users(team) }, アポ獲得者: { value: [{ code: me.code }] },
-          初回商談日: { value: ymd(new Date(apoDt)) }, 次回商談日: { value: apoDt },
+          初回商談日: { value: TD().ofIso(apoDt).date }, 次回商談日: { value: apoDt },
           詳細: { value: memo ? '(アポ獲得時のメモ)' + memo : '' }
         };
         dealP = api('/k/v1/record', 'POST', { app: DEAL_APP_ID, record: rec }).then(function (resp) {
@@ -584,7 +584,7 @@
     }).catch(function () { return null; });
   }
 
-  // day: 訪問した日(省略で今日。朝6時前は前日)。carry: 日付を変えて開き直すときに引き継ぐ入力
+  // day: 訪問した日(省略で日本時間の今日)。carry: 日付を変えて開き直すときに引き継ぐ入力
   function openVisitDialog(ctx, day, carry) {
     var r = ctx.record, data = ctx.data, props = data.dealProps || {};
     var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
@@ -595,7 +595,7 @@
     // スケジュールを見られない人は予定なしとして扱う
     api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '案件No', '内容'],
       query: '顧客No = "' + custNo + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
-        '開始日時 >= "' + today + 'T00:00:00+09:00" and 開始日時 < "' + nextYmd(today) + 'T00:00:00+09:00" order by 開始日時 asc limit 5' })
+        TD().dayQuery('開始日時', today) + ' order by 開始日時 asc limit 5' })
       .then(function (resp) { return resp.records; }).catch(function () { return []; })
       .then(function (plans) { showVisitDialog(plans); });
 
@@ -624,13 +624,13 @@
       $('.v-date').value = today;
       dateNote($('.v-date'), $('.v-date-note'));
       // 日付を変えたら、その日の訪問予定で選び直せるように開き直す(書いた報告は引き継ぐ)
-      $('.v-date').addEventListener('change', function () {
-        var v = this.value;
-        if (!v || v === today) return;
+      function reopen(v) {
         var keep = { memo: $('.v-memo').value, next: hasNext ? $('.v-next').value : undefined };
         if (bg.parentNode) document.body.removeChild(bg);
         openVisitDialog(ctx, v, keep);
-      });
+      }
+      // キーボードで打ち終わるまで待つ(2026-10-25 P1。1文字目で開き直して違う日になっていた)
+      TD().onDateCommit($('.v-date'), function (v) { if (v && v !== today) reopen(v); }, [$('.v-save'), $('.v-cancel')]);
 
       var dealSel = $('.v-deal');
       dealSel.appendChild(el('option', { value: '' }, '(案件なし)'));
@@ -680,6 +680,14 @@
       function close() { if (bg.parentNode) document.body.removeChild(bg); }
       $('.v-cancel').addEventListener('click', close);
       $('.v-save').addEventListener('click', function () {
+        // 日付を打ってすぐ保存を押したときは、その日の予定で開き直してから保存してもらう(開いた日の予定で記録しないように)
+        var v = $('.v-date').value;
+        if (!v) { alert('訪問した日を入れてください'); return; }
+        if (v !== today) {
+          alert('訪問した日を変えたので、その日の訪問予定で開き直します。内容を確かめて、もう一度「保存」を押してください。');
+          reopen(v);
+          return;
+        }
         var memo = $('.v-memo').value.trim();
         if (!memo) { alert('報告を書いてください(一言でもかまいません)'); return; }
         // 案件があるときは確度を必須に(2026-10-20)。// 失注・保留/中止にしたときは確度は要らない
@@ -687,8 +695,6 @@
           alert('案件の「確度」を選んでください(商談の手応え。迷ったら低めで構いません)');
           return;
         }
-        var btn = this;
-        btn.disabled = true;
         var plan = planSel ? planOf(planSel.value) : null;
         var deal = dealOf(dealSel.value);
         var msgs = [];
@@ -697,6 +703,13 @@
           upd.商談フェーズ = { value: $('.v-phase').value };
           setWonDate(upd, deal, $('.v-phase').value, today); // 訪問した日を受注日に
         }
+        // 受注日は実際に受注した日。未来の日付は入れない(2026-10-25 P1)
+        if (upd.受注日 && today > workDay()) {
+          alert('受注にするときは、訪問した日が受注日になります。受注日に未来の日付は入れられません。訪問した日を確かめてください。');
+          return;
+        }
+        var btn = this;
+        btn.disabled = true;
         if (deal && $('.v-kakudo').value && $('.v-kakudo').value !== fv(deal, '確度', '')) upd.確度 = { value: $('.v-kakudo').value };
         var next = hasNext ? $('.v-next').value : '';
         var actId = null;
@@ -756,6 +769,8 @@
       '<label>次回商談日(入れるとスケジュールにも入ります)</label><input type="datetime-local" class="d-next">' +
       '<div class="chub-row2"><div><label>受注予定日</label><input type="date" class="d-due"></div>' +
       '<div><label>売上(円)</label><input type="number" class="d-amount" min="0" step="1"></div></div>' +
+      '<div class="d-won-box" style="display:none"><label>受注日(実際に受注した日)</label><input type="date" class="d-won">' +
+      '<div class="chub-sub d-won-note" style="margin:4px 0 0"></div></div>' +
       '<div class="chub-sub" style="margin-top:10px">見積書の作成・契約書の添付は <span class="d-open"></span> から。</div>' +
       '<div class="chub-btns"><button type="button" class="d-cancel">キャンセル</button><button type="button" class="primary d-save">保存</button></div>';
     bg.appendChild(m);
@@ -799,7 +814,19 @@
       return d;
     }
     var current = load();
-    tSel.addEventListener('change', function () { current = load(); });
+    // 受注にするとき(受注日がまだ無い案件)だけ受注日を聞く。初期値は日本時間の今日、何日の受注かを常に出す(2026-10-25 P1)
+    var wonIn = m.querySelector('.d-won');
+    wonIn.value = workDay();
+    dateNote(wonIn, m.querySelector('.d-won-note'));
+    function needWonDate() {
+      var probe = {};
+      setWonDate(probe, current, m.querySelector('.d-phase').value, 'x');
+      return !!probe.受注日;
+    }
+    function toggleWon() { m.querySelector('.d-won-box').style.display = needWonDate() ? '' : 'none'; }
+    m.querySelector('.d-phase').addEventListener('change', toggleWon);
+    toggleWon();
+    tSel.addEventListener('change', function () { current = load(); toggleWon(); });
 
     function close() { if (bg.parentNode) document.body.removeChild(bg); }
     m.querySelector('.d-cancel').addEventListener('click', close);
@@ -808,6 +835,9 @@
       var item = m.querySelector('.d-item').value;
       var phase = m.querySelector('.d-phase').value;
       if (!phase) { alert('商談フェーズを選んでください'); return; }
+      // 受注日は必須・未来の日付は不可(2026-10-25 P1。空のまま今日を入れて保存することはしない)
+      if (needWonDate() && !wonIn.value) { alert('受注日を入力してください(実際に受注した日)'); return; }
+      if (needWonDate() && wonIn.value > workDay()) { alert('受注日が未来の日付です。実際に受注した日を選んでください'); return; }
       var next = fromLocalInput(m.querySelector('.d-next').value);
       var amount = m.querySelector('.d-amount').value;
       var picked = picker ? picker.get() : [];
@@ -816,7 +846,7 @@
         次回商談日: { value: next || null }, 受注予定日: { value: m.querySelector('.d-due').value || null },
         売上: { value: amount === '' ? null : amount }, 商談担当者: { value: users(picked) }
       };
-      setWonDate(rec, current, phase, workDay());
+      setWonDate(rec, current, phase, wonIn.value);
       var prev = current ? fv(current, '次回商談日', '') : '';
       var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
       btn.disabled = true;

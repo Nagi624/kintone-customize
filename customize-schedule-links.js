@@ -14,7 +14,10 @@
  *   (2026-10-17: ボタン名を「飛び込みを記録」→「訪問を記録」。今日の自分の訪問予定がこのネタにあれば、架電履歴には足さず
  *    予定を完了にして活動履歴に1件残す=スケジュールの訪問完了と同じ。同じ訪問を予定と飛び込みの両方に数えないため)
  *   (日付=今日・担当=自分。獲得ならアポ獲得者が空のとき自分を入れ、続けてアポをスケジュールに登録するか聞く)。
- *   (2026-10-21: 日付を選べるようにした。朝6時前は前日が初期値。今日以外の日は時刻を空にする(日報では午後扱い)。
+ *   (2026-10-21: 日付を選べるようにした。今日以外の日は時刻を空にする(日報では午後扱い)。
+ *    2026-10-25 P1: 日付の初期値は日本時間の今日(朝6時前でも前日にしない)。日付欄の下に「何日の業務として記録するか」を常に出す。
+ *    日付・時刻は共通部品 customize-business-date.js(window.TaimeiDate)を使う(同じアプリに登録が必要)。
+ *    訪問の日付はキーボードで打ち終わってから、その日の予定で開き直す(onDateCommit)。
  *    結果が失注なら進捗状況も失注に(架電リストから外す)、それ以外で未着手なら架電済みに。種別の値は「電話」→「架電」に改名)
  *   (ネタリストの「📋 Googleマップから貼り付けて登録」で訪問したを選んだときは、登録後にこの画面で「🚶 訪問を記録」を自動で開く)
  * - 案件管理の「コール業務」は入力できなくする(2026-10-16 使用終了。架電の結果は顧客管理の作業パネルから活動履歴へ)。
@@ -207,16 +210,12 @@
   // ---------- ネタリスト: 架電を記録(編集画面を開かずに1回で保存) ----------
   var CALL_RESULTS = ['架電済み', '不通・不在', 'ネタ', '獲得', '失注', '受付ブロック']; // 受付ブロック: 受付で断られた・取り付く島もない(2026-10-16)
 
-  // この時刻より前の記録は前日の分として日付の初期値を前日にする(夜中に前日分を入れても前日の日報に入るように)
-  var DAY_START_HOUR = 6;
-  function ymdOf(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
-  function todayYmd() { return ymdOf(new Date()); }
-  function workDay() {
-    var d = new Date();
-    if (d.getHours() < DAY_START_HOUR) d.setDate(d.getDate() - 1);
-    return ymdOf(d);
+  // 日付・時刻は日本時間(端末のタイムゾーンに関係なく)。記録する日の初期値は今日で、朝6時前でも前日にしない
+  function TD() {
+    if (!window.TaimeiDate) throw new Error('customize-business-date.js が読み込まれていません');
+    return window.TaimeiDate;
   }
-  function nextYmd(s) { var d = new Date(s + 'T00:00:00'); d.setDate(d.getDate() + 1); return ymdOf(d); }
+  function todayYmd() { return TD().today(); }
 
   // REST APIで返ってきたテーブルの行を、更新(PUT)に使える形にする
   function rowForPut(row) {
@@ -228,16 +227,13 @@
     return { id: row.id, value: v };
   }
 
-  function nowHm() {
-    var d = new Date();
-    return pad(d.getHours()) + ':' + pad(d.getMinutes());
-  }
+  function nowHm() { return TD().nowHm(); }
 
   // その日の自分の訪問予定(まだ「予定」のもの)で、このネタが訪問先のもの。見られない人は無しとして扱う
   function plansOfLead(leadId, day) {
     return api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '内容'],
       query: 'ネタNo = "' + leadId + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
-        '開始日時 >= "' + day + 'T00:00:00+09:00" and 開始日時 < "' + nextYmd(day) + 'T00:00:00+09:00" order by 開始日時 asc limit 1' })
+        TD().dayQuery('開始日時', day) + ' order by 開始日時 asc limit 1' })
       .then(function (resp) { return resp.records[0] || null; }).catch(function () { return null; });
   }
 
@@ -272,10 +268,10 @@
   }
 
   // kind: '架電' または '飛び込み'(ボタン名は「🚶 訪問を記録」。架電履歴の種別の値は学習・日報で使うので「飛び込み」のまま)
-  // day: 記録する日(省略で今日。朝6時前は前日)。carry: 日付を変えて開き直すときに引き継ぐ入力
+  // day: 記録する日(省略で日本時間の今日)。carry: 日付を変えて開き直すときに引き継ぐ入力
   function openCallDialog(r, kind, day, carry) {
     kind = kind || '架電';
-    day = day || workDay();
+    day = day || todayYmd();
     if (kind !== '飛び込み') return showCallDialog(r, kind, null, day, carry);
     plansOfLead(fv(r, 'レコード番号', '') || fv(r, '$id', ''), day).then(function (plan) { showCallDialog(r, kind, plan, day, carry); });
   }
@@ -326,27 +322,32 @@
     });
     var dateIn = m.querySelector('.call-date');
     dateIn.value = day;
-    function dateNote() {
-      var v = dateIn.value;
-      m.querySelector('.call-date-note').textContent = !v || v === todayYmd() ? '' :
-        v < todayYmd() ? '※ ' + v + ' の分として記録します(日報もその日に入ります。時刻は空になります)' : '※ 未来の日付になっています';
-    }
+    // 何日の業務として記録するかを常に出す(日付は変えない。前の日の分は利用者が選ぶ)
+    function dateNote() { TD().renderNote(m.querySelector('.call-date-note'), dateIn.value, '時刻は空になります。'); }
     dateNote();
     function close() { if (bg.parentNode) document.body.removeChild(bg); }
-    dateIn.addEventListener('change', function () {
-      dateNote();
-      // 訪問は、その日の訪問予定で記録し直せるように開き直す(書いたメモは引き継ぐ)
-      if (kind === '飛び込み' && dateIn.value && dateIn.value !== day) {
-        var keep = { memo: m.querySelector('.call-memo').value, next: nextIn.value };
-        close();
-        openCallDialog(r, kind, dateIn.value, keep);
-      }
-    });
+    dateIn.addEventListener('change', dateNote);
+    // 訪問は、その日の訪問予定で記録し直せるように開き直す(書いたメモは引き継ぐ)
+    function reopen(v) {
+      var keep = { memo: m.querySelector('.call-memo').value, next: nextIn.value };
+      close();
+      openCallDialog(r, kind, v, keep);
+    }
+    // キーボードで打ち終わるまで待つ(2026-10-25 P1。1文字目で開き直して違う日になっていた)
+    if (kind === '飛び込み') {
+      TD().onDateCommit(dateIn, function (v) { if (v && v !== day) reopen(v); }, [m.querySelector('.call-save'), m.querySelector('.call-cancel')]);
+    }
     m.querySelector('.call-cancel').addEventListener('click', close);
     m.querySelector('.call-save').addEventListener('click', function () {
       if (!chosen) { alert('結果を選んでください'); return; }
       var d = dateIn.value;
       if (!d) { alert('日付を入れてください'); return; }
+      // 日付を打ってすぐ保存を押したときは、その日の予定で開き直してから保存してもらう(開いた日の予定を完了にしないように)
+      if (kind === '飛び込み' && d !== day) {
+        alert('訪問した日を変えたので、その日の訪問予定で開き直します。内容を確かめて、もう一度「保存」を押してください。');
+        reopen(d);
+        return;
+      }
       var memo = m.querySelector('.call-memo').value;
       var next = nextIn.value;
       var id = fv(r, 'レコード番号', '') || fv(r, '$id', '');
