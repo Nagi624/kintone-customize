@@ -20,6 +20,9 @@
  *    訪問の日付はキーボードで打ち終わってから、その日の予定で開き直す(onDateCommit)。
  *    結果が失注なら進捗状況も失注に(架電リストから外す)、それ以外で未着手なら架電済みに。種別の値は「電話」→「架電」に改名)
  *   (ネタリストの「📋 Googleマップから貼り付けて登録」で訪問したを選んだときは、登録後にこの画面で「🚶 訪問を記録」を自動で開く)
+ *   (2026-10-26 P2 訪問実績の正本=活動履歴17: 予定のある訪問は「実際に訪問した人」を選ぶ(初期候補=予定の参加者、停止中の人は選べない、
+ *    本人も外せる、0人は不可)。全員を活動履歴の対応者に入れ、「予定No」に予定の番号を入れる。作る前に予定を取り直し、
+ *    予定Noで活動履歴を探す(同じ予定から2件作らない)。予定の無い飛び込みは今までどおり「架電履歴」欄に種別=飛び込みの行で残す(架電ではなく訪問。日報では訪問件数に数える。P2の例外))
  * - 案件管理の「コール業務」は入力できなくする(2026-10-16 使用終了。架電の結果は顧客管理の作業パネルから活動履歴へ)。
  */
 (function () {
@@ -231,7 +234,7 @@
 
   // その日の自分の訪問予定(まだ「予定」のもの)で、このネタが訪問先のもの。見られない人は無しとして扱う
   function plansOfLead(leadId, day) {
-    return api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '内容'],
+    return api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '内容', '参加者'],
       query: 'ネタNo = "' + leadId + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
         TD().dayQuery('開始日時', day) + ' order by 開始日時 asc limit 1' })
       .then(function (resp) { return resp.records[0] || null; }).catch(function () { return null; });
@@ -244,27 +247,170 @@
     return now === '未着手' || !now ? '架電済み' : null;
   }
 
+  // ---------- 予定ありの訪問: 二重作成の防止・実際に訪問した人(2026-10-26 P2 B案。予定34の customize-schedule.js と同じ考え方) ----------
+  // 活動履歴17が訪問実績の正本。予定から記録するときは、予定を取り直し、活動履歴を「予定No」で探してから作る(同じ予定から2件作らない)。
+  // 実際に訪問した人は全員を対応者に入れる(初期候補=予定の参加者、停止中の人は外して選べない、本人も外せる、0人は不可)
+  var VISIT_MEMBER_APP_ID = 35;
+  // 戻り値: {done: 活動履歴No}=既に記録済み / {canceled: true}=中止 / {many: 件数} / {found: 活動履歴} / {}=作ってよい
+  function checkPlanBeforeRecord(planId) {
+    return kintone.Promise.all([
+      api('/k/v1/record', 'GET', { app: SCHEDULE_APP_ID, id: planId }),
+      api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id', '対応者', '対応日付'], query: '予定No = ' + Number(planId) + ' limit 10' })
+    ]).then(function (res) {
+      var cur = res[0].record;
+      if (fv(cur, '活動履歴No', '')) return { done: fv(cur, '活動履歴No', '') };
+      if (fv(cur, '実施状況', '') === '中止') return { canceled: true };
+      if (res[1].records.length > 1) return { many: res[1].records.length };
+      return res[1].records.length ? { found: res[1].records[0] } : {};
+    });
+  }
+  function planStopMessage(st) {
+    if (st.done) return 'この予定は、すでに活動履歴に記録されています(活動履歴No.' + st.done + ')。画面を開き直してください。';
+    if (st.canceled) return 'この予定は「中止」になっています。訪問した場合は、スケジュールで実施状況を「予定」に戻してから記録してください。';
+    return 'この予定から作った活動履歴が ' + st.many + '件あります。新しくは作りません。管理者に連絡してください。';
+  }
+  // 活動履歴の「予定No」の重複で登録が拒否されたか(CB_VA01 かつ errors のキーに予定No。文言では判定しない)
+  function isDupError(err) {
+    return !!(err && err.code === 'CB_VA01' && err.errors && Object.keys(err.errors).some(function (k) { return k.indexOf('予定No') >= 0; }));
+  }
+  // 予定から活動履歴を作る。予定Noの重複で拒否されたら(同時に作られた)、その記録を使う。戻り値 {id, linked}
+  function createPlannedActivity(planId, act) {
+    return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act }).then(function (resp) { return { id: resp.id }; }, function (err) {
+      if (!isDupError(err)) throw err;
+      return checkPlanBeforeRecord(planId).then(function (st) {
+        if (st.found) return { id: st.found.$id.value, linked: true };
+        throw new Error(st.done || st.canceled || st.many ? planStopMessage(st) : '予定Noの重複で記録できませんでした。管理者に連絡してください。');
+      });
+    });
+  }
+  // 停止中のユーザーの判定(U2)。共通管理のユーザー情報(valid)を読む。読めなかったら null(停止中かどうかを推測しない)
+  function fetchUserValidity(codes) {
+    if (!codes.length) return kintone.Promise.resolve({});
+    var q = codes.map(function (c, i) { return 'codes[' + i + ']=' + encodeURIComponent(c); }).join('&');
+    return new kintone.Promise(function (resolve) {
+      fetch('/v1/users.json?' + q, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+        .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+        .then(function (j) {
+          var out = {};
+          (j.users || []).forEach(function (u) { out[u.code] = u.valid !== false; });
+          resolve(out);
+        })
+        .catch(function () { resolve(null); });
+    });
+  }
+  // 足せる人の候補(スケジュールの表示メンバー35。見られない人は候補なし)
+  function fetchVisitMembers() {
+    return api('/k/v1/records', 'GET', { app: VISIT_MEMBER_APP_ID, fields: ['メンバー'], query: '表示 in ("表示する") order by 表示順 asc limit 500' })
+      .then(function (resp) {
+        var out = [];
+        resp.records.forEach(function (x) { var u = fv(x, 'メンバー', [])[0]; if (u) out.push({ code: u.code, name: u.name }); });
+        return out;
+      }).catch(function () { return []; });
+  }
+  // 「実際に訪問した人」の欄。戻り値 {el, ready, selected()}
+  function visitorPicker(plan) {
+    function mk(tag, css, text) {
+      var e = document.createElement(tag);
+      if (css) e.style.cssText = css;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+    var box = mk('div');
+    var list = mk('div', 'display:flex;flex-wrap:wrap;gap:4px 14px');
+    var adder = mk('div', 'margin-top:6px;display:none;align-items:center;gap:6px');
+    var sel = mk('select', 'width:auto;max-width:70%;padding:6px;border:1px solid #cbd5e1;border-radius:6px');
+    var addBtn = mk('button', 'width:auto;padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer', '＋ 足す');
+    addBtn.type = 'button';
+    var note = mk('div', 'font-size:12px;color:#b45309;margin-top:4px', '読み込み中…');
+    adder.appendChild(sel);
+    adder.appendChild(addBtn);
+    box.appendChild(list);
+    box.appendChild(adder);
+    box.appendChild(note);
+    var shown = {};
+    var validity = null;
+    var loaded = false;
+    function stopped(code) { return !!validity && validity[code] === false; }
+    function addRow(u, checked) {
+      if (shown[u.code]) return;
+      var off = stopped(u.code);
+      var cb = mk('input', 'width:auto;margin:0');
+      cb.type = 'checkbox';
+      cb.checked = checked && !off;
+      cb.disabled = off;
+      var lab = mk('label', 'display:inline-flex;align-items:center;gap:4px;margin:0;font-size:14px;color:' + (off ? '#94a3b8' : '#0f172a'));
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(u.name + (off ? '(停止中のため選べません)' : '')));
+      list.appendChild(lab);
+      shown[u.code] = { cb: cb, name: u.name };
+    }
+    var parts = fv(plan, '参加者', []);
+    var ready = fetchVisitMembers().then(function (members) {
+      var codes = parts.map(function (u) { return u.code; });
+      members.forEach(function (m) { if (codes.indexOf(m.code) < 0) codes.push(m.code); });
+      return fetchUserValidity(codes).then(function (v) {
+        validity = v;
+        parts.forEach(function (u) { addRow(u, true); });
+        note.textContent = v === null ? '停止中かどうかを確認できませんでした。実際に訪問した人だけにチェックを入れてください。' : '';
+        var others = members.filter(function (m) { return !shown[m.code] && !stopped(m.code); });
+        if (others.length) {
+          var o0 = mk('option', '', '(一緒に訪問した人を足す)');
+          o0.value = '';
+          sel.appendChild(o0);
+          others.forEach(function (m) { var o = mk('option', '', m.name); o.value = m.code; sel.appendChild(o); });
+          adder.style.display = 'flex';
+        }
+        addBtn.addEventListener('click', function () {
+          var m = members.filter(function (x) { return x.code === sel.value; })[0];
+          if (!m) return;
+          addRow(m, true);
+          sel.removeChild(sel.querySelector('option[value="' + m.code + '"]'));
+          sel.value = '';
+        });
+      });
+    }).catch(function () {
+      parts.forEach(function (u) { addRow(u, true); });
+      note.textContent = '停止中かどうかを確認できませんでした。実際に訪問した人だけにチェックを入れてください。';
+    }).then(function () { loaded = true; });
+    return {
+      el: box, ready: ready, isReady: function () { return loaded; },
+      selected: function () {
+        return Object.keys(shown).filter(function (c) { return shown[c].cb.checked && !shown[c].cb.disabled; })
+          .map(function (c) { return { code: c, name: shown[c].name }; });
+      }
+    };
+  }
+
   // 予定のある訪問: スケジュールの「✅ 訪問完了」と同じく、活動履歴に1件残して予定を完了にする(架電履歴には足さない。
   // 足すと日報の訪問件数で予定と飛び込みの両方に数えられ、飛び込みリストの学習にもアポの訪問が混ざるため)
-  function recordPlannedVisit(r, plan, chosen, memo, next, day) {
+  // visitors: 実際に訪問した人(2026-10-26 P2)。戻り値は完了の知らせの文
+  function recordPlannedVisit(r, plan, chosen, memo, next, day, visitors) {
     var me = kintone.getLoginUser();
     var id = fv(r, 'レコード番号', '') || fv(r, '$id', '');
     var body = fv(plan, '内容', '').replace(/\(案件管理の次回商談日から自動作成\)/g, '').trim();
     var act = {
       タイトル: { value: '訪問: ' + fv(r, '会社名', '') }, 対応日付: { value: day },
-      対応者: { value: [{ code: me.code }] }, 対応種別: { value: '商談（初回）' },
+      対応者: { value: visitors.map(function (u) { return { code: u.code }; }) }, 対応種別: { value: '商談（初回）' },
       内容: { value: '訪問先: ' + fv(r, '会社名', '') + '(ネタNo.' + id + '、顧客未登録)\n結果: ' + chosen + (memo ? '\n' + memo : '') +
-        (body ? '\n\n【予定のメモ】' + body : '') + '\n\n(スケジュールNo.' + plan.$id.value + ' から作成)' }
+        (body ? '\n\n【予定のメモ】' + body : '') + '\n\n(スケジュールNo.' + plan.$id.value + ' から作成)' },
+      予定No: { value: String(plan.$id.value) }
     };
-    return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act }).then(function (resp) {
-      return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: plan.$id.value, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(resp.id) } } });
+    var done = '予定を完了にして、活動履歴に記録しました。';
+    // 作る前に予定を取り直し、予定Noで活動履歴を探す(同じ予定から2件作らない)
+    return checkPlanBeforeRecord(plan.$id.value).then(function (st) {
+      if (st.done || st.canceled || st.many) throw new Error(planStopMessage(st));
+      if (st.found) return { id: st.found.$id.value, linked: true };
+      return createPlannedActivity(plan.$id.value, act);
+    }).then(function (res) {
+      if (res.linked) done = 'この予定から作った活動履歴(No.' + res.id + ')があったので、新しく作らずそれを使い、予定を完了にしました(対応者は変えていません)。';
+      return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: plan.$id.value, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(res.id) } } });
     }).then(function () {
       var upd = { 次回架電予定日: { value: next || null } };
       if (chosen === '獲得' && !fv(r, 'アポ獲得者', []).length) upd.アポ獲得者 = { value: [{ code: me.code }] };
       var pg = progressUpdate(r, chosen);
       if (pg) upd.進捗状況 = { value: pg };
       return api('/k/v1/record', 'PUT', { app: LEAD_APP_ID, id: id, record: upd });
-    });
+    }).then(function () { return done; });
   }
 
   // kind: '架電' または '飛び込み'(ボタン名は「🚶 訪問を記録」。架電履歴の種別の値は学習・日報で使うので「飛び込み」のまま)
@@ -288,7 +434,8 @@
       '<div class="call-date-note" style="color:#b45309;font-size:12px;margin:4px 0 10px"></div>' +
       (plan ? '<div style="margin-bottom:10px;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;border-radius:6px;font-size:13px">📅 ' +
         (ps.getMonth() + 1) + '/' + ps.getDate() + ' ' + pad(ps.getHours()) + ':' + pad(ps.getMinutes()) +
-        ' の訪問予定の訪問として記録し、予定を「完了」にします(スケジュールの「✅ 訪問完了」と同じ。活動履歴に残ります)。</div>' : '') +
+        ' の訪問予定の訪問として記録し、予定を「完了」にします(スケジュールの「✅ 訪問完了」と同じ。活動履歴に残ります)。</div>' +
+        '<div style="color:#475569;margin-bottom:6px">実際に訪問した人(この全員の日報に訪問1件が入ります)</div><div class="call-visitors" style="margin-bottom:10px"></div>' : '') +
       '<div style="color:#475569;margin-bottom:6px">結果</div><div class="call-results" style="display:flex;flex-wrap:wrap;gap:6px"></div>' +
       '<div class="call-lose" style="display:none;margin-top:8px;padding:6px 10px;border:1px solid #fca5a5;background:#fef2f2;border-radius:6px;font-size:12px;color:#991b1b">失注: ネタの進捗状況も「失注」にし、架電リストに出なくなります。次回架電予定日は空にします。</div>' +
       '<div style="color:#475569;margin:12px 0 6px">メモ</div><input class="call-memo" type="text" style="width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box">' +
@@ -297,6 +444,8 @@
       '<button type="button" class="call-save" style="padding:8px 14px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;cursor:pointer">保存</button></div>';
     bg.appendChild(m);
     document.body.appendChild(bg);
+    var picker = plan ? visitorPicker(plan) : null;
+    if (picker) m.querySelector('.call-visitors').appendChild(picker.el);
     var nextIn = m.querySelector('.call-next');
     var nextVal = fv(r, '次回架電予定日', '');
     if (nextVal) nextIn.value = nextVal;
@@ -348,12 +497,15 @@
         reopen(d);
         return;
       }
+      if (picker && !picker.isReady()) { alert('実際に訪問した人を読み込んでいます。少し待ってから、もう一度押してください'); return; }
+      var visitors = picker ? picker.selected() : [];
+      if (plan && !visitors.length) { alert('実際に訪問した人を1人以上選んでください'); return; }
       var memo = m.querySelector('.call-memo').value;
       var next = nextIn.value;
       var id = fv(r, 'レコード番号', '') || fv(r, '$id', '');
       var me = kintone.getLoginUser();
       this.disabled = true;
-      (plan ? recordPlannedVisit(r, plan, chosen, memo, next, d) : api('/k/v1/record', 'GET', { app: LEAD_APP_ID, id: id }).then(function (resp) {
+      (plan ? recordPlannedVisit(r, plan, chosen, memo, next, d, visitors) : api('/k/v1/record', 'GET', { app: LEAD_APP_ID, id: id }).then(function (resp) {
         var cur = resp.record;
         // 何も入っていない行(新規作成時の初期値だけの行など)は除いて、新しい行を足す
         var rows = fv(cur, '架電履歴', []).filter(function (row) {
@@ -369,9 +521,9 @@
         var pg = progressUpdate(cur, chosen);
         if (pg) upd.進捗状況 = { value: pg };
         return api('/k/v1/record', 'PUT', { app: LEAD_APP_ID, id: id, record: upd });
-      })).then(function () {
+      })).then(function (msg) {
         close();
-        if (plan) alert('予定を完了にして、活動履歴に記録しました。');
+        if (plan) alert(typeof msg === 'string' ? msg : '予定を完了にして、活動履歴に記録しました。');
         if (chosen === '獲得' && !plan && confirm('アポ獲得として記録しました。続けて、アポをスケジュールに登録しますか？')) {
           openScheduleCreate(leadPrefill(r));
           return;

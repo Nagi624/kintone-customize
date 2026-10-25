@@ -39,6 +39,9 @@
  * 前提の欄: 活動履歴17「コール業務」(ドロップダウン)、顧客管理18「次回連絡日」(日付)・「GoogleマップURL」(リンク)。無い場合はその部分を出さない。
  * 受注日(2026-10-24): 訪問の記録・案件を作る/進めるで商談フェーズを受注にしたら、案件19の「受注日」が空のときだけ
  *   訪問した日(案件のダイアログは「受注日」欄で選んだ日。初期値は日本時間の今日)を入れる(setWonDate)
+ * 2026-10-26(P2 訪問実績の正本=活動履歴17): 🚶 訪問を記録で予定を選んだときは、「実際に訪問した人」を選ぶ(初期候補=予定の参加者、
+ *   停止中の人は選べない、本人も外せる、0人は不可)。全員を活動履歴の対応者に入れ、「予定No」に予定の番号を入れる。
+ *   作る前に予定を取り直し、予定Noで活動履歴を探す(同じ予定から2件作らない)。予定とは別の訪問(突発)は今までどおり押した人だけ
  */
 (function () {
   'use strict';
@@ -584,6 +587,140 @@
     }).catch(function () { return null; });
   }
 
+  // ---------- 予定ありの訪問: 二重作成の防止・実際に訪問した人(2026-10-26 P2 B案。予定34の customize-schedule.js と同じ考え方) ----------
+  // 活動履歴17が訪問実績の正本。予定から記録するときは、予定を取り直し、活動履歴を「予定No」で探してから作る(同じ予定から2件作らない)。
+  // 実際に訪問した人は全員を対応者に入れる(初期候補=予定の参加者、停止中の人は外して選べない、本人も外せる、0人は不可)
+  var VISIT_MEMBER_APP_ID = 35;
+  // 戻り値: {done: 活動履歴No}=既に記録済み / {canceled: true}=中止 / {many: 件数} / {found: 活動履歴} / {}=作ってよい
+  function checkPlanBeforeRecord(planId) {
+    return kintone.Promise.all([
+      api('/k/v1/record', 'GET', { app: SCHEDULE_APP_ID, id: planId }),
+      api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id', '対応者', '対応日付'], query: '予定No = ' + Number(planId) + ' limit 10' })
+    ]).then(function (res) {
+      var cur = res[0].record;
+      if (fv(cur, '活動履歴No', '')) return { done: fv(cur, '活動履歴No', '') };
+      if (fv(cur, '実施状況', '') === '中止') return { canceled: true };
+      if (res[1].records.length > 1) return { many: res[1].records.length };
+      return res[1].records.length ? { found: res[1].records[0] } : {};
+    });
+  }
+  function planStopMessage(st) {
+    if (st.done) return 'この予定は、すでに活動履歴に記録されています(活動履歴No.' + st.done + ')。画面を開き直してください。';
+    if (st.canceled) return 'この予定は「中止」になっています。訪問した場合は、スケジュールで実施状況を「予定」に戻してから記録してください。';
+    return 'この予定から作った活動履歴が ' + st.many + '件あります。新しくは作りません。管理者に連絡してください。';
+  }
+  // 活動履歴の「予定No」の重複で登録が拒否されたか(CB_VA01 かつ errors のキーに予定No。文言では判定しない)
+  function isDupError(err) {
+    return !!(err && err.code === 'CB_VA01' && err.errors && Object.keys(err.errors).some(function (k) { return k.indexOf('予定No') >= 0; }));
+  }
+  // 予定から活動履歴を作る。予定Noの重複で拒否されたら(同時に作られた)、その記録を使う。戻り値 {id, linked}
+  function createPlannedActivity(planId, act) {
+    return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act }).then(function (resp) { return { id: resp.id }; }, function (err) {
+      if (!isDupError(err)) throw err;
+      return checkPlanBeforeRecord(planId).then(function (st) {
+        if (st.found) return { id: st.found.$id.value, linked: true };
+        throw new Error(st.done || st.canceled || st.many ? planStopMessage(st) : '予定Noの重複で記録できませんでした。管理者に連絡してください。');
+      });
+    });
+  }
+  // 停止中のユーザーの判定(U2)。共通管理のユーザー情報(valid)を読む。読めなかったら null(停止中かどうかを推測しない)
+  function fetchUserValidity(codes) {
+    if (!codes.length) return kintone.Promise.resolve({});
+    var q = codes.map(function (c, i) { return 'codes[' + i + ']=' + encodeURIComponent(c); }).join('&');
+    return new kintone.Promise(function (resolve) {
+      fetch('/v1/users.json?' + q, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+        .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+        .then(function (j) {
+          var out = {};
+          (j.users || []).forEach(function (u) { out[u.code] = u.valid !== false; });
+          resolve(out);
+        })
+        .catch(function () { resolve(null); });
+    });
+  }
+  // 足せる人の候補(スケジュールの表示メンバー35。見られない人は候補なし)
+  function fetchVisitMembers() {
+    return api('/k/v1/records', 'GET', { app: VISIT_MEMBER_APP_ID, fields: ['メンバー'], query: '表示 in ("表示する") order by 表示順 asc limit 500' })
+      .then(function (resp) {
+        var out = [];
+        resp.records.forEach(function (x) { var u = fv(x, 'メンバー', [])[0]; if (u) out.push({ code: u.code, name: u.name }); });
+        return out;
+      }).catch(function () { return []; });
+  }
+  // 「実際に訪問した人」の欄。戻り値 {el, ready, selected()}
+  function visitorPicker(plan) {
+    function mk(tag, css, text) {
+      var e = document.createElement(tag);
+      if (css) e.style.cssText = css;
+      if (text !== undefined) e.textContent = text;
+      return e;
+    }
+    var box = mk('div');
+    var list = mk('div', 'display:flex;flex-wrap:wrap;gap:4px 14px');
+    var adder = mk('div', 'margin-top:6px;display:none;align-items:center;gap:6px');
+    var sel = mk('select', 'width:auto;max-width:70%;padding:6px;border:1px solid #cbd5e1;border-radius:6px');
+    var addBtn = mk('button', 'width:auto;padding:6px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;cursor:pointer', '＋ 足す');
+    addBtn.type = 'button';
+    var note = mk('div', 'font-size:12px;color:#b45309;margin-top:4px', '読み込み中…');
+    adder.appendChild(sel);
+    adder.appendChild(addBtn);
+    box.appendChild(list);
+    box.appendChild(adder);
+    box.appendChild(note);
+    var shown = {};
+    var validity = null;
+    var loaded = false;
+    function stopped(code) { return !!validity && validity[code] === false; }
+    function addRow(u, checked) {
+      if (shown[u.code]) return;
+      var off = stopped(u.code);
+      var cb = mk('input', 'width:auto;margin:0');
+      cb.type = 'checkbox';
+      cb.checked = checked && !off;
+      cb.disabled = off;
+      var lab = mk('label', 'display:inline-flex;align-items:center;gap:4px;margin:0;font-size:14px;color:' + (off ? '#94a3b8' : '#0f172a'));
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(u.name + (off ? '(停止中のため選べません)' : '')));
+      list.appendChild(lab);
+      shown[u.code] = { cb: cb, name: u.name };
+    }
+    var parts = fv(plan, '参加者', []);
+    var ready = fetchVisitMembers().then(function (members) {
+      var codes = parts.map(function (u) { return u.code; });
+      members.forEach(function (m) { if (codes.indexOf(m.code) < 0) codes.push(m.code); });
+      return fetchUserValidity(codes).then(function (v) {
+        validity = v;
+        parts.forEach(function (u) { addRow(u, true); });
+        note.textContent = v === null ? '停止中かどうかを確認できませんでした。実際に訪問した人だけにチェックを入れてください。' : '';
+        var others = members.filter(function (m) { return !shown[m.code] && !stopped(m.code); });
+        if (others.length) {
+          var o0 = mk('option', '', '(一緒に訪問した人を足す)');
+          o0.value = '';
+          sel.appendChild(o0);
+          others.forEach(function (m) { var o = mk('option', '', m.name); o.value = m.code; sel.appendChild(o); });
+          adder.style.display = 'flex';
+        }
+        addBtn.addEventListener('click', function () {
+          var m = members.filter(function (x) { return x.code === sel.value; })[0];
+          if (!m) return;
+          addRow(m, true);
+          sel.removeChild(sel.querySelector('option[value="' + m.code + '"]'));
+          sel.value = '';
+        });
+      });
+    }).catch(function () {
+      parts.forEach(function (u) { addRow(u, true); });
+      note.textContent = '停止中かどうかを確認できませんでした。実際に訪問した人だけにチェックを入れてください。';
+    }).then(function () { loaded = true; });
+    return {
+      el: box, ready: ready, isReady: function () { return loaded; },
+      selected: function () {
+        return Object.keys(shown).filter(function (c) { return shown[c].cb.checked && !shown[c].cb.disabled; })
+          .map(function (c) { return { code: c, name: shown[c].name }; });
+      }
+    };
+  }
+
   // day: 訪問した日(省略で日本時間の今日)。carry: 日付を変えて開き直すときに引き継ぐ入力
   function openVisitDialog(ctx, day, carry) {
     var r = ctx.record, data = ctx.data, props = data.dealProps || {};
@@ -593,7 +730,7 @@
     var today = day || workDay();
     var open = openDeals(data.deals);
     // スケジュールを見られない人は予定なしとして扱う
-    api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '案件No', '内容'],
+    api('/k/v1/records', 'GET', { app: SCHEDULE_APP_ID, fields: ['$id', '件名', '開始日時', '案件No', '内容', '参加者'],
       query: '顧客No = "' + custNo + '" and 元予定No = "" and 種類 in ("訪問") and 実施状況 in ("予定") and 参加者 in (LOGINUSER()) and ' +
         TD().dayQuery('開始日時', today) + ' order by 開始日時 asc limit 5' })
       .then(function (resp) { return resp.records; }).catch(function () { return []; })
@@ -606,7 +743,8 @@
       m.innerHTML = '<h3>🚶 訪問を記録</h3><div class="chub-sub">' + esc(company) + ' ・ ' + esc(me.name) + '(活動履歴に1件残ります)</div>' +
         '<label style="margin-top:0">訪問した日</label><input type="date" class="v-date"><div class="chub-sub v-date-note" style="margin:4px 0 0;color:#b45309"></div>' +
         (plans.length ? '<label>' + dLabel(today) + 'の訪問予定</label><select class="v-plan"></select>' +
-          '<div class="chub-sub v-plan-note" style="margin:6px 0 0"></div>' : '') +
+          '<div class="chub-sub v-plan-note" style="margin:6px 0 0"></div>' +
+          '<div class="v-visitors-box" style="display:none"><label>実際に訪問した人(この全員の日報に訪問1件が入ります)</label><div class="v-visitors"></div></div>' : '') +
         '<label>案件</label><select class="v-deal"></select>' +
         '<div class="chub-row2 v-deal-box"><div><label>商談フェーズ</label><select class="v-phase"></select></div>' +
         '<div><label>確度</label><select class="v-kakudo"></select></div></div>' +
@@ -660,6 +798,7 @@
       dealSel.addEventListener('change', loadDeal);
 
       var planSel = $('.v-plan');
+      var picker = null;
       function planOf(id) { return plans.filter(function (p) { return p.$id.value === id; })[0] || null; }
       if (planSel) {
         plans.forEach(function (p) {
@@ -669,6 +808,11 @@
         var onPlan = function () {
           var p = planOf(planSel.value);
           $('.v-plan-note').textContent = p ? 'この予定の訪問として記録し、予定を「完了」にします(スケジュールの「✅ 訪問完了」と同じです)。' : '予定とは別の訪問として記録します。予定はそのまま残ります。';
+          // 予定の訪問は、実際に訪問した人を選ぶ(2026-10-26 P2)
+          $('.v-visitors').innerHTML = '';
+          picker = p ? visitorPicker(p) : null;
+          if (picker) $('.v-visitors').appendChild(picker.el);
+          $('.v-visitors-box').style.display = p ? '' : 'none';
           setDeal(p ? fv(p, '案件No', '') : '');
         };
         planSel.addEventListener('change', onPlan);
@@ -696,6 +840,9 @@
           return;
         }
         var plan = planSel ? planOf(planSel.value) : null;
+        if (plan && picker && !picker.isReady()) { alert('実際に訪問した人を読み込んでいます。少し待ってから、もう一度押してください'); return; }
+        var visitors = plan && picker ? picker.selected() : [{ code: me.code, name: me.name }];
+        if (!visitors.length) { alert('実際に訪問した人を1人以上選んでください'); return; }
         var deal = dealOf(dealSel.value);
         var msgs = [];
         var upd = {};
@@ -713,25 +860,37 @@
         if (deal && $('.v-kakudo').value && $('.v-kakudo').value !== fv(deal, '確度', '')) upd.確度 = { value: $('.v-kakudo').value };
         var next = hasNext ? $('.v-next').value : '';
         var actId = null;
-        (Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: deal.$id.value, record: upd }).then(function () {
-          msgs.push('案件の' + Object.keys(upd).join('・') + 'を更新しました。');
-        }) : kintone.Promise.resolve()).then(function () {
+        var linked = null; // この予定から作った活動履歴が既にあれば、それを使う(2026-10-26 P2 二重作成の防止)
+        (plan ? checkPlanBeforeRecord(plan.$id.value) : kintone.Promise.resolve({})).then(function (st) {
+          if (st.done || st.canceled || st.many) throw new Error(planStopMessage(st));
+          linked = st.found || null;
+          return Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: deal.$id.value, record: upd }).then(function () {
+            msgs.push('案件の' + Object.keys(upd).join('・') + 'を更新しました。');
+          }) : null;
+        }).then(function () {
+          if (linked) return null;
           // 対応種別: この会社で初めての商談なら「商談（初回）」(スケジュールの訪問完了と同じ決め方)
           return api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id'],
             query: '顧客No = "' + custNo + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") limit 1' });
         }).then(function (resp) {
+          if (linked) return { id: linked.$id.value, linked: true };
           var body = plan ? fv(plan, '内容', '').replace(/\(案件管理の次回商談日から自動作成\)/g, '').trim() : '';
           var act = {
             タイトル: { value: '訪問: ' + company }, 対応日付: { value: today },
-            対応者: { value: [{ code: me.code }] }, 対応種別: { value: resp.records.length ? '商談（2回目以降）' : '商談（初回）' },
+            対応者: { value: visitors.map(function (u) { return { code: u.code }; }) },
+            対応種別: { value: resp.records.length ? '商談（2回目以降）' : '商談（初回）' },
             内容: { value: memo + (body ? '\n\n【予定のメモ】' + body : '') + (plan ? '\n\n(スケジュールNo.' + plan.$id.value + ' から作成)' : '') },
             会社名: { value: company }
           };
           if (deal) act.案件No = { value: String(deal.$id.value) };
+          if (plan) {
+            act.予定No = { value: String(plan.$id.value) };
+            return createPlannedActivity(plan.$id.value, act);
+          }
           return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: act });
         }).then(function (resp) {
           actId = resp.id;
-          msgs.push('活動履歴に記録しました。');
+          msgs.push(resp.linked ? 'この予定から作った活動履歴(No.' + actId + ')があったので、新しく作らずそれを使いました(対応者は変えていません)。' : '活動履歴に記録しました。');
           if (!plan) return null;
           return api('/k/v1/record', 'PUT', { app: SCHEDULE_APP_ID, id: plan.$id.value, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(actId) } } })
             .then(function () {

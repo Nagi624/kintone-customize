@@ -8,7 +8,16 @@
  * - 非公開の予定は作成者・参加者しか見られない(レコードのアクセス権)。代わりに同じ時間帯の
  *   「予定あり」レコード(元予定No=元のレコード番号)を自動で作り・更新・削除し、他の人にはそれだけが見える。
  *
+ * - 詳細画面「✅ 訪問完了」: 報告を書いて活動履歴(app17)に記録し、予定を「完了」にする。訪問した日を小窓で選ぶ(2026-10-25 P2)。
+ *   初期値は予定の日(日本時間)、予定が未来なら今日。未来の日は選べない。予定と違う日を選んだら、予定の開始・終了日時も
+ *   その日へ動かす(時刻はそのまま。カレンダーの予定と実績の日を合わせるため)。
+ * - 訪問実績の正本は活動履歴17(2026-10-26 P2 B案)。営業日報32は活動履歴17の訪問だけを数え、予定の「完了」は数えない。
+ *   ・小窓で「実際に訪問した人」を選ぶ(初期候補=参加者。停止中の人は外して選べない。本人も外せる。0人は不可)。全員を活動履歴の対応者に入れる
+ *   ・活動履歴の「予定No」にこの予定の番号を入れる(重複禁止の欄)。作る前に予定を取り直し、予定Noで活動履歴を探して、あれば作らず紐付ける
+ *   ・訪問の予定は、編集・新規作成・一覧の直接編集で実施状況を「完了」にできない(元に戻す/保存を止める)。種類の変更は保存時に止める
+ *
  * 依存: FullCalendar 6(index.global.min.js)と日本語ロケールを、このファイルより先に読み込むこと。
+ *       業務日の共通部品 customize-business-date.js(window.TaimeiDate)も同じアプリに登録すること(訪問完了で使う)。
  */
 (function () {
   'use strict';
@@ -42,6 +51,11 @@
   function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
   function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n, d.getHours(), d.getMinutes()); }
   function startOfWeek(d) { var s = startOfDay(d); return addDays(s, -((s.getDay() + 6) % 7)); } // 月曜始まり
+  // 業務日(訪問した日など)は共通部品 customize-business-date.js(window.TaimeiDate)で日本時間に揃える(2026-10-25 P2)
+  function TD() {
+    if (!window.TaimeiDate) throw new Error('customize-business-date.js が読み込まれていません');
+    return window.TaimeiDate;
+  }
 
   // ---------- データ取得 ----------
   function fetchAll(app, query, fields) {
@@ -1046,11 +1060,46 @@
     });
   }
 
+  // ---------- 訪問の予定を手で「完了」にすることの防止(2026-10-26 P2 9章) ----------
+  // 訪問の完了は「✅ 訪問完了」から(活動履歴に記録してから予定を完了にする)。管理者も例外にしない(U8)。
+  // 実施状況を「完了」に変えたときはその場で元に戻す。種類の変更などで「訪問・完了・活動履歴なし」になったときは、
+  // 値を勝手に変えず保存時に止めて案内する(M4-2 案1)。「中止」「予定」への変更はこれまでどおりできる(U9)
+  var COMPLETE_MSG = '訪問の「完了」は、詳細画面の「✅ 訪問完了(報告を書く)」から記録してください(活動履歴に報告が残り、日報の訪問件数に入ります)。';
+  var originalStatus = {};
+  function statusKey(event) {
+    return String(event.recordId || (event.record && event.record.$id && event.record.$id.value) || 'new');
+  }
+  function badCompletion(r) {
+    return fv(r, '種類', '') === '訪問' && fv(r, '実施状況', '') === '完了' && !fv(r, '活動履歴No', '') && !fv(r, '元予定No', '');
+  }
+  kintone.events.on(['app.record.create.show', 'app.record.edit.show', 'app.record.index.edit.show',
+    'mobile.app.record.create.show', 'mobile.app.record.edit.show'], function (event) {
+    originalStatus[statusKey(event)] = fv(event.record, '実施状況', '予定');
+    return event;
+  });
+  kintone.events.on(['app.record.create.change.実施状況', 'app.record.edit.change.実施状況', 'app.record.index.edit.change.実施状況',
+    'mobile.app.record.create.change.実施状況', 'mobile.app.record.edit.change.実施状況'], function (event) {
+    if (badCompletion(event.record)) {
+      var prev = originalStatus[statusKey(event)];
+      event.record.実施状況.value = prev && prev !== '完了' ? prev : '予定';
+      window.alert(COMPLETE_MSG);
+    }
+    return event;
+  });
+  kintone.events.on(['app.record.index.edit.submit'], function (event) {
+    if (badCompletion(event.record)) event.error = COMPLETE_MSG;
+    return event;
+  });
+
   kintone.events.on(['app.record.create.submit', 'app.record.edit.submit',
     'mobile.app.record.create.submit', 'mobile.app.record.edit.submit'], function (event) {
     detectEnv(event);
     var r = event.record;
     var isCreate = event.type.indexOf('create') >= 0;
+    if (badCompletion(r)) {
+      event.error = COMPLETE_MSG;
+      return event;
+    }
     var s = Date.parse(fv(r, '開始日時', ''));
     var e = Date.parse(fv(r, '終了日時', ''));
     if (!isNaN(s) && !isNaN(e) && e < s) {
@@ -1403,45 +1452,240 @@
 
   // 訪問の予定を「完了」にして、活動履歴(app17)に報告を1件残す(2026-10-17: 活動履歴は確認用になったので、報告はこの小窓で書く)
   // 同じ日にこの会社の訪問を「🚶 訪問を記録」で記録済みなら、新しく作らずその記録を予定に紐付ける(同じ訪問を2件にしない)
+  // 訪問した日(2026-10-25 P2): 初期値は予定の日(日本時間)、予定が未来なら今日。予定と違う日にしたら予定の日時も動かす
+  // 二重作成の防止(2026-10-26 P2 B案): 小窓を開く前と保存の直前に、予定を取り直し・予定Noで活動履歴を探す
   function createActivity(id, r) {
+    var T;
+    try { T = TD(); } catch (e) { alert('訪問完了を記録できません。' + e.message + '\n管理者に連絡してください。'); return; }
     var dealNo = fv(r, '案件No', '');
-    var custNo = fv(r, '顧客No', '');
-    var day = ymd(new Date(fv(r, '開始日時', '')));
-    var me = kintone.getLoginUser();
-    // 予定に紐付いていない、同じ日・同じ会社・自分の訪問記録(顧客のある予定だけ探せる)
-    var findP = custNo ? kintone.Promise.all([
-      api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id', '内容'],
-        query: '顧客No = "' + custNo + '" and 対応日付 = "' + day + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") and 対応者 in ("' + me.code + '") order by $id desc limit 10' }),
-      api('/k/v1/records', 'GET', { app: APP_ID, fields: ['活動履歴No'],
-        query: '顧客No = "' + custNo + '" and 活動履歴No > 0 and 開始日時 >= "' + day + 'T00:00:00+09:00" and 開始日時 <= "' + day + 'T23:59:59+09:00" limit 50' })
-    ]).then(function (res) {
-      var used = res[1].records.map(function (x) { return String(fv(x, '活動履歴No', '')); });
-      return res[0].records.filter(function (a) {
-        return used.indexOf(String(a.$id.value)) < 0 && !/スケジュールNo\.\d+ から作成/.test(fv(a, '内容', ''));
-      })[0] || null;
-    }).catch(function () { return null; }) : kintone.Promise.resolve(null);
-
-    findP.then(function (found) {
-      if (found && confirm('この会社のこの日の訪問は、すでに「🚶 訪問を記録」で記録されています(活動履歴No.' + found.$id.value + ')。\n新しく作らず、その記録をこの予定の報告にして「完了」にしますか？\n(キャンセルで、報告を書いて新しく記録します)')) {
-        return api('/k/v1/record', 'PUT', { app: APP_ID, id: id, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(found.$id.value) } } })
-          .then(function () { return syncDeals([dealNo]).catch(function () { return null; }); })
-          .then(function () { alert('予定を完了にして、活動履歴No.' + found.$id.value + 'と紐付けました。'); location.reload(); });
-      }
-      return askVisitReport(r, dealNo).then(function (choice) {
-        if (!choice) return null;
-        var upd = {};
-        if (choice.phase) upd.商談フェーズ = { value: choice.phase };
-        if (choice.kakudo) upd.確度 = { value: choice.kakudo };
-        var p = Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: dealNo, record: upd }) : kintone.Promise.resolve();
-        return p.then(function () { return doCreateActivity(id, r, choice.memo); });
+    var schedDay = T.ofIso(fv(r, '開始日時', '')).date;
+    var day0 = schedDay > T.today() ? T.today() : schedDay;
+    checkBeforeCreate(id).then(function (st) {
+      var done = settle(id, r, st);
+      if (done) return done;
+      return findRecorded(r, day0).then(function (found) {
+        if (found && confirm(linkMessage(found, day0))) return linkActivity(id, r, found, day0, null);
+        return askVisitReport(r, dealNo, day0, schedDay).then(function (choice) {
+          if (!choice) return null;
+          // 小窓に入力している間に、ほかの人・ほかの端末で記録されていないかをもう一度確かめる
+          return checkBeforeCreate(id).then(function (st2) {
+            var done2 = settle(id, r, st2);
+            if (done2) return done2;
+            // 日付を変えたときは、選んだ日の「🚶 訪問を記録」ともう一度照合する
+            var again = choice.date !== day0 ? findRecorded(r, choice.date) : kintone.Promise.resolve(null);
+            return again.then(function (found2) {
+              var upd = {};
+              if (choice.phase) upd.商談フェーズ = { value: choice.phase };
+              if (choice.kakudo) upd.確度 = { value: choice.kakudo };
+              var p = Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: dealNo, record: upd }) : kintone.Promise.resolve();
+              var link = found2 && confirm(linkMessage(found2, choice.date) + '\n(紐付ける場合、いま書いた報告は使いません)');
+              return p.then(function () { return link ? linkActivity(id, r, found2, choice.date, choice.visitors) : doCreateActivity(id, r, choice); });
+            });
+          });
+        });
       });
     }).catch(function (err) {
       alert('記録できませんでした。' + (err && err.message ? '\n' + err.message : ''));
     });
   }
 
-  // 報告(話した内容)と、案件があれば商談フェーズ・確度を聞く画面。OKなら {memo, phase, kakudo}、キャンセルなら null
-  function askVisitReport(r, dealNo) {
+  // 予定の最新の状態と、この予定から作った活動履歴(予定No)を確かめる(2026-10-26 P2 二重作成の防止)
+  // 戻り値: {done: 活動履歴No}=既に完了 / {canceled: true}=中止 / {many: 件数} / {found: 活動履歴} / {}=作ってよい
+  function checkBeforeCreate(id) {
+    return kintone.Promise.all([
+      api('/k/v1/record', 'GET', { app: APP_ID, id: id }),
+      api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id', '対応者', '対応日付'], query: '予定No = ' + Number(id) + ' limit 10' })
+    ]).then(function (res) {
+      var cur = res[0].record;
+      if (fv(cur, '活動履歴No', '')) return { done: fv(cur, '活動履歴No', '') };
+      if (fv(cur, '実施状況', '') === '中止') return { canceled: true };
+      if (res[1].records.length > 1) return { many: res[1].records.length };
+      return res[1].records.length ? { found: res[1].records[0] } : {};
+    });
+  }
+  // checkBeforeCreate の結果で止める・紐付けるときは Promise を返す(呼び出し側はそこで終わる)。作ってよいときは null
+  function settle(id, r, st) {
+    if (st.done) {
+      alert('この予定は、すでに活動履歴に記録されています(活動履歴No.' + st.done + ')。画面を開き直します。');
+      location.reload();
+      return kintone.Promise.resolve(null);
+    }
+    if (st.canceled) {
+      alert('この予定は「中止」になっています。訪問した場合は、実施状況を「予定」に戻してから記録してください。');
+      return kintone.Promise.resolve(null);
+    }
+    if (st.many) {
+      alert('この予定から作った活動履歴が ' + st.many + '件あります。新しくは作りません。管理者に連絡してください。');
+      return kintone.Promise.resolve(null);
+    }
+    if (st.found) {
+      // 前回、活動履歴は作れたが予定の更新が失敗した場合など。新しく作らず、その記録で完了にする
+      return linkActivity(id, r, st.found, fv(st.found, '対応日付', '') || null, null,
+        'この予定から作った活動履歴(No.' + st.found.$id.value + ')が見つかったので、新しく作らずそれを報告にしました。\n');
+    }
+    return null;
+  }
+  // 活動履歴の「予定No」の重複で登録が拒否されたか(2026-10-26 M1: CB_VA01 かつ errors のキーに予定No。文言では判定しない)
+  function isDupError(err) {
+    return !!(err && err.code === 'CB_VA01' && err.errors && Object.keys(err.errors).some(function (k) { return k.indexOf('予定No') >= 0; }));
+  }
+
+  // 予定に紐付いていない、その日・同じ会社・自分の訪問記録(顧客のある予定だけ探せる)。無ければ null
+  function findRecorded(r, day) {
+    var custNo = fv(r, '顧客No', '');
+    if (!custNo) return kintone.Promise.resolve(null);
+    var me = kintone.getLoginUser();
+    return kintone.Promise.all([
+      api('/k/v1/records', 'GET', { app: ACTIVITY_APP_ID, fields: ['$id', '内容', '対応者'],
+        query: '顧客No = "' + custNo + '" and 対応日付 = "' + day + '" and 対応種別 in ("商談（初回）", "商談（2回目以降）") and 対応者 in ("' + me.code + '") and 予定No = "" order by $id desc limit 10' }),
+      api('/k/v1/records', 'GET', { app: APP_ID, fields: ['活動履歴No'],
+        query: '顧客No = "' + custNo + '" and 活動履歴No > 0 and ' + TD().dayQuery('開始日時', day) + ' limit 50' })
+    ]).then(function (res) {
+      var used = res[1].records.map(function (x) { return String(fv(x, '活動履歴No', '')); });
+      return res[0].records.filter(function (a) {
+        return used.indexOf(String(a.$id.value)) < 0 && !/スケジュールNo\.\d+ から作成/.test(fv(a, '内容', ''));
+      })[0] || null;
+    }).catch(function () { return null; });
+  }
+  function linkMessage(found, day) {
+    return 'この会社の ' + TD().label(day) + ' の訪問は、すでに「🚶 訪問を記録」で記録されています(活動履歴No.' + found.$id.value + ')。\n' +
+      '新しく作らず、その記録をこの予定の報告にして「完了」にしますか？\n(キャンセルで、報告を書いて新しく記録します)';
+  }
+  // 予定の開始・終了日時を、訪問した日へ動かす(時刻・長さはそのまま)。予定の日と同じなら {}
+  function movedTimes(r, day) {
+    var from = TD().ofIso(fv(r, '開始日時', '')).date;
+    if (!day || day === from) return {};
+    var shift = Date.parse(day + 'T00:00:00Z') - Date.parse(from + 'T00:00:00Z'); // 日本時間は夏時間が無いので日数×24時間
+    var out = { 開始日時: { value: toKintoneDT(new Date(Date.parse(fv(r, '開始日時', '')) + shift)) } };
+    if (fv(r, '終了日時', '')) out.終了日時 = { value: toKintoneDT(new Date(Date.parse(fv(r, '終了日時', '')) + shift)) };
+    return out;
+  }
+  // 予定を「完了」にする(活動履歴No を紐付け、訪問した日が予定と違えば日時も動かす)。非公開の予定は「予定あり」も同じ日時へ
+  function completeSchedule(id, r, actId, day) {
+    var rec = movedTimes(r, day);
+    var moved = !!rec.開始日時;
+    rec.実施状況 = { value: '完了' };
+    rec.活動履歴No = { value: String(actId) };
+    return api('/k/v1/record', 'PUT', { app: APP_ID, id: id, record: rec }).then(function () {
+      if (!moved || fv(r, '公開区分', '公開') !== '非公開') return null;
+      var copy = {};
+      Object.keys(r).forEach(function (k) { copy[k] = r[k]; });
+      copy.開始日時 = rec.開始日時;
+      if (rec.終了日時) copy.終了日時 = rec.終了日時;
+      return syncCompanion(id, copy).catch(function (e) { console.warn('「予定あり」の日時を動かせませんでした', e); });
+    }).then(function () { return moved; });
+  }
+  function movedNote(moved, day) {
+    return moved ? '\n予定の日時を ' + TD().label(day) + ' に移しました(時刻はそのまま)。' : '';
+  }
+  // 既存の活動履歴を予定に紐付けて完了にする。活動履歴は変えない(対応者を上書きしない=U5、予定Noも書き込まない=U7)
+  // visitors: 小窓で選んだ訪問者(選んでいないときは null)。既存の対応者と違えば、変えていないことを知らせる
+  function linkActivity(id, r, found, day, visitors, head) {
+    var dealNo = fv(r, '案件No', '');
+    var cur = fv(found, '対応者', null);
+    var diff = '';
+    if (visitors && cur) {
+      var curCodes = cur.map(function (u) { return u.code; });
+      var missing = visitors.filter(function (u) { return curCodes.indexOf(u.code) < 0; });
+      if (missing.length) {
+        diff = '\n活動履歴の対応者は変えていません(' + missing.map(function (u) { return u.name; }).join('・') +
+          ' さんは、この訪問の件数に入りません)。直す場合は管理者に連絡してください。';
+      }
+    }
+    return completeSchedule(id, r, found.$id.value, day).then(function (moved) {
+      return syncDeals([dealNo]).catch(function () { return null; }).then(function () {
+        alert((head || '') + '予定を完了にして、活動履歴No.' + found.$id.value + 'と紐付けました。' + movedNote(moved, day) + diff);
+        location.reload();
+      });
+    });
+  }
+
+  // 停止中のユーザーの判定(2026-10-26 P2 U2)。共通管理のユーザー情報(valid)を読む。
+  // 読めなかったときは null を返す(停止中かどうかを推測しない)。結果に無いユーザーは停止中として扱わない
+  function fetchUserValidity(codes) {
+    if (!codes.length) return kintone.Promise.resolve({});
+    var q = codes.map(function (c, i) { return 'codes[' + i + ']=' + encodeURIComponent(c); }).join('&');
+    return new kintone.Promise(function (resolve) {
+      fetch('/v1/users.json?' + q, { headers: { 'X-Requested-With': 'XMLHttpRequest' }, credentials: 'same-origin' })
+        .then(function (res) { if (!res.ok) throw new Error('HTTP ' + res.status); return res.json(); })
+        .then(function (j) {
+          var out = {};
+          (j.users || []).forEach(function (u) { out[u.code] = u.valid !== false; });
+          resolve(out);
+        })
+        .catch(function () { resolve(null); });
+    });
+  }
+
+  // 「実際に訪問した人」の欄(2026-10-26 P2 U1・U2・6章)。初期候補=予定の参加者(全員にチェック)。停止中の人は外して選べない。
+  // 表示メンバー(app35)から足せる。本人も外せる(0人の確認は保存時)。戻り値 {el, ready, selected()}
+  function visitorPicker(r) {
+    var box = el('div');
+    var list = el('div', { style: 'display:flex;flex-wrap:wrap;gap:4px 14px' });
+    var adder = el('div', { style: 'margin-top:6px;display:none' });
+    var sel = el('select', { style: 'width:auto;max-width:70%' });
+    var addBtn = el('button', { type: 'button', style: 'margin-left:6px' }, '＋ 足す');
+    var note = el('div', { style: 'font-size:12px;color:#b45309;margin-top:4px' }, '読み込み中…');
+    adder.appendChild(sel);
+    adder.appendChild(addBtn);
+    box.appendChild(list);
+    box.appendChild(adder);
+    box.appendChild(note);
+    var shown = {};
+    var validity = null;
+    var loaded = false;
+    function stopped(code) { return !!validity && validity[code] === false; }
+    function addRow(u, checked) {
+      if (shown[u.code]) return;
+      var off = stopped(u.code);
+      var cb = el('input', { type: 'checkbox' });
+      cb.checked = checked && !off;
+      cb.disabled = off;
+      var lab = el('label', { style: 'display:inline-flex;align-items:center;gap:4px;margin:0;font-size:14px;color:' + (off ? '#94a3b8' : '#0f172a') });
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(u.name + (off ? '(停止中のため選べません)' : '')));
+      list.appendChild(lab);
+      shown[u.code] = { cb: cb, name: u.name };
+    }
+    var parts = fv(r, '参加者', []);
+    var ready = fetchMembers().catch(function () { return []; }).then(function (members) {
+      var codes = parts.map(function (u) { return u.code; });
+      members.forEach(function (m) { if (codes.indexOf(m.code) < 0) codes.push(m.code); });
+      return fetchUserValidity(codes).then(function (v) {
+        validity = v;
+        parts.forEach(function (u) { addRow(u, true); });
+        note.textContent = v === null ? '停止中かどうかを確認できませんでした。実際に訪問した人だけにチェックを入れてください。' : '';
+        var others = members.filter(function (m) { return !shown[m.code] && !stopped(m.code); });
+        if (others.length) {
+          sel.appendChild(el('option', { value: '' }, '(一緒に訪問した人を足す)'));
+          others.forEach(function (m) { sel.appendChild(el('option', { value: m.code }, m.name)); });
+          adder.style.display = '';
+        }
+        addBtn.addEventListener('click', function () {
+          var m = members.filter(function (x) { return x.code === sel.value; })[0];
+          if (!m) return;
+          addRow(m, true);
+          sel.removeChild(sel.querySelector('option[value="' + m.code + '"]'));
+          sel.value = '';
+        });
+      });
+    }).catch(function () {
+      parts.forEach(function (u) { addRow(u, true); });
+      note.textContent = '停止中かどうかを確認できませんでした。実際に訪問した人だけにチェックを入れてください。';
+    }).then(function () { loaded = true; });
+    return {
+      el: box, ready: ready, isReady: function () { return loaded; },
+      selected: function () {
+        return Object.keys(shown).filter(function (c) { return shown[c].cb.checked && !shown[c].cb.disabled; })
+          .map(function (c) { return { code: c, name: shown[c].name }; });
+      }
+    };
+  }
+
+  // 報告(話した内容)・訪問した日・実際に訪問した人と、案件があれば商談フェーズ・確度を聞く画面。OKなら {memo, date, visitors, phase, kakudo}、キャンセルなら null
+  // day0: 訪問した日の初期値、schedDay: 予定の日(日本時間)。未来の日は選べない(2026-10-25 P2)
+  function askVisitReport(r, dealNo, day0, schedDay) {
+    var T = TD();
     var dealP = dealNo ? kintone.Promise.all([
       api('/k/v1/record', 'GET', { app: DEAL_APP_ID, id: dealNo }),
       api('/k/v1/app/form/fields', 'GET', { app: DEAL_APP_ID })
@@ -1456,8 +1700,31 @@
       return new kintone.Promise(function (resolve) {
         var bg = el('div', { className: 'sched-modal-bg' });
         var m = el('div', { className: 'sched-modal', style: 'max-width:440px' });
-        m.appendChild(el('h3', {}, (fv(r, '種類', '') === '外出' ? '外出完了' : '訪問完了') + ' → 活動履歴に記録'));
-        m.appendChild(el('div', { style: 'color:#64748b;font-size:12px' }, (companyOf(r) || fv(r, '件名', '')) + ' ・ ' + hm(new Date(fv(r, '開始日時', ''))) + ' ・ ' + kintone.getLoginUser().name));
+        var out = fv(r, '種類', '') === '外出';
+        var st = T.ofIso(fv(r, '開始日時', ''));
+        m.appendChild(el('h3', {}, (out ? '外出完了' : '訪問完了') + ' → 活動履歴に記録'));
+        m.appendChild(el('div', { style: 'color:#64748b;font-size:12px' }, (companyOf(r) || fv(r, '件名', '')) + ' ・ 予定 ' + T.label(schedDay) + ' ' + pad(st.hour) + ':' + pad(st.minute) + ' ・ ' + kintone.getLoginUser().name));
+        m.appendChild(el('label', {}, out ? '外出した日' : '訪問した日'));
+        var date = el('input', { type: 'date', max: T.today(), style: 'width:100%;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px' });
+        date.value = day0;
+        m.appendChild(date);
+        var note = el('div', { style: 'font-size:12px;margin-top:4px' });
+        var moveNote = el('div', { style: 'font-size:12px;margin-top:2px;color:#b45309;font-weight:bold' });
+        m.appendChild(note);
+        m.appendChild(moveNote);
+        var showDate = function () {
+          T.renderNote(note, date.value);
+          moveNote.textContent = date.value && date.value !== schedDay && date.value <= T.today() ?
+            '予定(' + T.label(schedDay) + ')と違う日です。予定の日時も ' + T.label(date.value) + ' に移します(時刻はそのまま)。' : '';
+        };
+        showDate();
+        // 実際に訪問した人(訪問のときだけ。外出は今までどおり押した人)
+        var picker = null;
+        if (!out) {
+          m.appendChild(el('label', {}, '実際に訪問した人(この全員の日報に訪問1件が入ります)'));
+          picker = visitorPicker(r);
+          m.appendChild(picker.el);
+        }
         m.appendChild(el('label', {}, '報告(話した内容・先方の反応・次の約束)'));
         var memo = el('textarea', { style: 'width:100%;min-height:90px;padding:8px;border:1px solid #cbd5e1;border-radius:6px;box-sizing:border-box;font-size:14px;font-family:inherit' });
         m.appendChild(memo);
@@ -1485,12 +1752,20 @@
         var ok = el('button', { className: 'primary' }, '完了にして記録');
         btns.appendChild(cancel);
         btns.appendChild(ok);
+        // キーボードで打っている間は表示を変えない(P1 と同じ部品)。ボタンへ移ったときはボタンの処理で確かめる
+        T.onDateCommit(date, showDate, [ok, cancel]);
         m.appendChild(btns);
         bg.appendChild(m);
         document.body.appendChild(bg);
         function close(v) { document.body.removeChild(bg); resolve(v); }
         cancel.addEventListener('click', function () { close(null); });
         ok.addEventListener('click', function () {
+          if (!date.value) { alert((out ? '外出' : '訪問') + 'した日を入れてください'); return; }
+          if (date.value > T.today()) { alert('未来の日(' + T.label(date.value) + ')は選べません。実際に' + (out ? '外出' : '訪問') + 'した日を選んでください。'); return; }
+          showDate();
+          if (picker && !picker.isReady()) { alert('実際に訪問した人を読み込んでいます。少し待ってから、もう一度押してください'); return; }
+          var visitors = picker ? picker.selected() : [{ code: kintone.getLoginUser().code, name: kintone.getLoginUser().name }];
+          if (!visitors.length) { alert('実際に訪問した人を1人以上選んでください'); return; }
           if (!memo.value.trim()) { alert('報告を書いてください(一言でもかまいません)'); return; }
           // 案件があるときは確度を必須に(2026-10-20)。// 失注・保留/中止にしたときは確度は要らない
           if (kakudo && !kakudo.value && ['失注', '保留/中止'].indexOf(phase.value) < 0) {
@@ -1499,6 +1774,8 @@
           }
           close({
             memo: memo.value.trim(),
+            date: date.value,
+            visitors: visitors,
             phase: phase && phase.value !== fv(deal, '商談フェーズ', '') ? phase.value : '',
             kakudo: kakudo && kakudo.value !== fv(deal, '確度', '') ? kakudo.value : ''
           });
@@ -1507,8 +1784,8 @@
     });
   }
 
-  function doCreateActivity(id, r, memo) {
-    var me = kintone.getLoginUser();
+  function doCreateActivity(id, r, choice) {
+    var memo = choice.memo, day = choice.date;
     var custNo = fv(r, '顧客No', '');
     var kindP;
     if (fv(r, '種類', '') !== '訪問' || !custNo) kindP = kintone.Promise.resolve(fv(r, '種類', '') === '訪問' ? '商談（初回）' : 'その他');
@@ -1525,23 +1802,32 @@
       var title = companyOf(r) ? fv(r, '種類', '訪問') + ': ' + companyOf(r) : fv(r, '件名', '');
       var rec = {
         タイトル: { value: title },
-        対応日付: { value: ymd(new Date(fv(r, '開始日時', ''))) },
-        対応者: { value: [{ code: me.code }] },
+        対応日付: { value: day },
+        // 実際に訪問した人を全員(2026-10-26 P2 U1。外出は押した人)
+        対応者: { value: choice.visitors.map(function (u) { return { code: u.code }; }) },
         対応種別: { value: kind },
         内容: { value: (!fv(r, '会社名', '') && fv(r, 'ネタ会社名', '') ? '訪問先: ' + fv(r, 'ネタ会社名', '') + '(ネタNo.' + fv(r, 'ネタNo', '') + '、顧客未登録)\n' : '') +
-          memo + (body ? '\n\n【予定のメモ】' + body : '') + '\n\n(スケジュールNo.' + id + ' から作成)' }
+          memo + (body ? '\n\n【予定のメモ】' + body : '') + '\n\n(スケジュールNo.' + id + ' から作成)' },
+        予定No: { value: String(id) }
       };
       if (fv(r, '会社名', '')) rec.会社名 = { value: fv(r, '会社名', '') };
       if (fv(r, '案件No', '')) rec.案件No = { value: fv(r, '案件No', '') };
-      return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: rec });
-    }).then(function (resp) {
-      var actId = resp.id;
-      return api('/k/v1/record', 'PUT', { app: APP_ID, id: id, record: { 実施状況: { value: '完了' }, 活動履歴No: { value: String(actId) } } })
-        .then(function () { return syncDeals([fv(r, '案件No', '')]).catch(function () { return null; }); })
-        .then(function () { return actId; });
-    }).then(function (actId) {
-      alert('予定を完了にして、活動履歴に記録しました(No.' + actId + ')。');
-      location.reload();
+      return api('/k/v1/record', 'POST', { app: ACTIVITY_APP_ID, record: rec }).then(function (resp) {
+        return completeSchedule(id, r, resp.id, day).then(function (moved) {
+          return syncDeals([fv(r, '案件No', '')]).catch(function () { return null; }).then(function () {
+            alert('予定を完了にして、活動履歴に記録しました(No.' + resp.id + ')。' + movedNote(moved, day));
+            location.reload();
+          });
+        });
+      }, function (err) {
+        // 同じ予定の活動履歴が同時に作られた(予定Noの重複で拒否)。新しく作らず、その記録に紐付ける
+        if (!isDupError(err)) throw err;
+        return checkBeforeCreate(id).then(function (st) {
+          var done = settle(id, r, st);
+          if (done) return done;
+          throw new Error('予定Noの重複で記録できませんでしたが、該当の活動履歴が見つかりません。管理者に連絡してください。');
+        });
+      });
     });
   }
 

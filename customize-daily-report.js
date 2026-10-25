@@ -6,8 +6,9 @@
  * 1. 活動履歴(app17): 対応者=報告者 かつ 対応日付=日付
  *    対応種別 電話→架電 / 商談(初回・2回目以降)→訪問 / それ以外→その他
  *    (電話でコール業務=アポ獲得のときはアポ獲得。顧客管理の「📞 電話を記録」で入る、2026-10-16)
- *    予定の無い商談(顧客管理の「🚶 訪問を記録」、2026-10-17〜)は訪問件数にも数える(作成時刻で午前/午後)。
- *    予定から作った記録([スケジュールNo.X から作成])・予定の活動履歴Noに紐付いた記録は予定の側で数える
+ *    訪問実績の正本は活動履歴(2026-10-26 P2 B案)。商談の記録(2026-10-17〜)を、対応者に報告者が入っていれば1件と数える
+ *    (同行訪問は対応者の全員の日報にそれぞれ1件)。予定から作った記録も、予定に紐付けた🚶記録も、ここで数える。
+ *    午前/午後: 予定No(または予定の活動履歴No)で紐付く予定の開始時刻。無ければ作成時刻(後日入力は午後)
  * 2. 案件管理(app19): 作成者 or 更新者=報告者 かつ 更新日時がその日
  *    取り込むのは その日新規登録(失注以外)→見込み と 受注→受注(金額=売上) だけ(2026-10-20)。
  *    それ以外の更新(管理者の一括修正・軽い編集も拾っていた)は取り込まない。商談の中身は活動履歴・予定から入る。
@@ -19,8 +20,10 @@
  *       飛び込みは訪問件数にも数える(時刻で午前/午後。時刻が空なら午後)
  *    b. その日に報告者が新規登録したネタ(aで出たものを除く)。6件以上なら1行にまとめる
  * 4. スケジュール(app34): 参加者=報告者 かつ 開始がその日 の 訪問・外出
- *    訪問(中止以外)の件数を開始時刻で午前/午後に数え、訪問件数欄に入れる(手入力の方が多ければそのまま)
- *    明細は 訪問→訪問 / 中止・外出→その他。予定から活動履歴を作成済みなら、その活動履歴の行で取り込むので予定の行は作らない
+ *    予定の「完了」は訪問件数に数えない(2026-10-26 P2 B案。数えるのは 1. の活動履歴)。予定は次の用途だけ:
+ *    明細は 中止・外出(活動履歴の無いもの)→その他。活動履歴を作成済みの予定は、その活動履歴の行で取り込むので予定の行は作らない
+ *    訪問で「予定」のまま(行ったか分からない)のものは、数えず明細にも入れず、取り込み結果に注意を出す(2026-10-25 P2)
+ *    訪問で「完了」なのに活動履歴の無いもの(手で完了にした等)は、数えず明細にも入れず、不整合の注意を出す(2026-10-26)
  *    翌営業日(土日を除く)の予定を「明日の目標」に下書きとして追記する(【翌営業日の予定】の見出しがあれば追記しない)
  *
  * 架電件数: 活動履歴の対応種別「電話」+ネタリストの種別「電話」(空も電話扱い)の行を、結果に関係なく数えて入れる
@@ -40,7 +43,7 @@
  *     開いた時点の記録は足さない(利用者がわざと消した行が保存のたびに戻らないように)
  *
  * 日を跨いだ入力(2026-10-21。夜中〜早朝に前日分を書くと、前日の記録が当日の日報に入り訪問件数が二重になっていたため):
- *   - 朝6時前に新しい日報を開いたら、日付を前日にして開く(各記録ボタンも6時前は前日を初期値にしている)
+ *   - 朝6時前に新しい日報を開いたら、日付を前日にして開く(日報32の新規作成だけの例外。各記録ボタンの日付は2026-10-25から日本時間の今日)
  *   - 作成画面で日付・報告者を変えたら、それまでに自動で取り込んだ行と件数を外して、新しい日付で取り込み直す
  *   - 後日に入力した活動履歴(作成日≠対応日付)は作成時刻が当てにならないので、時間帯は午後として数える
  *
@@ -206,15 +209,16 @@
         var body = fv(a, '内容', '');
         if (body) memo += (memo ? '：' : '') + body;
         var fromSched = body.match(/スケジュールNo\.(\d+) から作成/);
-        // 予定の無い訪問(顧客管理の「🚶 訪問を記録」)は、作成した時刻で午前/午後の訪問件数に数える。
-        // 予定から作った記録・予定に紐付けた記録は予定の側で数えるので除く(apply で紐付けを見て外す)
+        // 訪問実績(2026-10-26 P2 B案): 商談の記録はすべて訪問件数に数える(予定から作った記録も、予定に紐付けた記録も)。
+        // 午前/午後は、紐付く予定があれば予定の開始時刻(collect で入れ直す)。無ければ作成した時刻、
         // 後日に入力した記録(夜中に前日分を書いたなど)は作成時刻が当てにならないので午後とする
         var time = isOnDate(fv(a, '作成日時', ''), date) ? ampm(fv(a, '作成日時', '')) : '午後';
-        var visitAt = t.indexOf('商談') === 0 && !fromSched && date >= VISIT_COUNT_FROM ? time : null;
+        var visit = t.indexOf('商談') === 0 && date >= VISIT_COUNT_FROM;
         return {
           mark: '[履歴No.' + a.$id.value + ']',
           alt: fromSched ? '[予定No.' + fromSched[1] + ']' : null,
-          actId: String(a.$id.value), visitAt: visitAt,
+          actId: String(a.$id.value), visit: visit, visitAt: visit ? time : null,
+          planNo: String(fv(a, '予定No', '') || ''),
           call: call,
           row: { kubun: kubun, company: fv(a, '会社名', ''), dealNo: fv(a, '案件No', ''), time: time,
             memo: '[履歴No.' + a.$id.value + '] 活動履歴(' + t + ') ' + shorten(memo, 180) }
@@ -335,22 +339,31 @@
     var tomorrow = nextBusinessDay(date);
     var tq = dayRangeQuery(codes, tomorrow) + ' order by 開始日時 asc';
     return Promise.all([getAll(APP.schedule, q), getAll(APP.schedule, tq)]).then(function (res) {
-      var out = { items: [], am: 0, pm: 0, plan: '', ok: true, linked: [], linkedTime: {} };
+      var out = { items: [], plan: '', ok: true, linkedTime: {}, pending: [], broken: [] };
       res[0].forEach(function (r) {
         var s = fv(r, '開始日時', '');
         var time = ampm(s);
         var st = fv(r, '実施状況', '予定');
-        var visit = fv(r, '種類', '') === '訪問' && st !== '中止';
-        if (visit) { if (time === '午前') out.am++; else out.pm++; }
+        var label = hm(s) + ' ' + (fv(r, '会社名', '') || fv(r, 'ネタ会社名', '') || fv(r, '件名', ''));
+        // 予定の「完了」は数えない(2026-10-26 P2 B案。訪問件数は活動履歴から数える)。紐付いた活動履歴の午前/午後にだけ使う
         if (fv(r, '活動履歴No', '')) {
-          out.linked.push(String(fv(r, '活動履歴No', '')));
           out.linkedTime[String(fv(r, '活動履歴No', ''))] = time;
+          return; // 活動履歴の行で取り込む
         }
-        if (fv(r, '活動履歴No', '')) return; // 活動履歴の行で取り込む
+        if (fv(r, '種類', '') === '訪問' && st === '予定') {
+          // 予定のままの訪問は明細に入れず、注意に出す(完了にして活動履歴に記録すると、報告の行と件数が入る)
+          out.pending.push(label);
+          return;
+        }
+        if (fv(r, '種類', '') === '訪問' && st === '完了') {
+          // 完了なのに活動履歴が無い(手で完了にした等)。数えず明細にも入れず、不整合の注意に出す
+          out.broken.push(label);
+          return;
+        }
         var id = r.$id.value;
         var mark = '[予定No.' + id + ']';
         out.items.push({ mark: mark, row: {
-          kubun: visit ? '訪問' : 'その他', time: time,
+          kubun: 'その他', time: time,
           company: fv(r, '会社名', '') || fv(r, 'ネタ会社名', ''), dealNo: fv(r, '案件No', ''),
           memo: mark + ' 予定(' + fv(r, '種類', '') + (st !== '予定' ? '・' + st : '') + ') ' + hm(s) + ' ' +
             shorten(fv(r, '件名', '') + (fv(r, '内容', '') ? '：' + fv(r, '内容', '') : ''), 150)
@@ -367,7 +380,7 @@
       return out;
     }).catch(function (e) {
       console.warn('スケジュールを取り込めませんでした', e);
-      return { items: [], am: 0, pm: 0, plan: '', ok: false, linked: [], linkedTime: {} };
+      return { items: [], plan: '', ok: false, linkedTime: {}, pending: [], broken: [] };
     });
   }
 
@@ -381,25 +394,40 @@
       fromSchedule(codes, date)
     ]).then(function (all) {
       var sched = all[3];
-      // 予定から作った・予定に紐付いた活動履歴は、予定の開始時刻で午前/午後
-      all[0].forEach(function (it) {
-        if (sched.linkedTime[it.actId]) it.row.time = sched.linkedTime[it.actId];
+      // 予定No で紐付く予定の開始時刻(その日の予定に無いもの=別の日の予定だけ読みに行く。見られなければ作成時刻のまま)
+      var need = all[0].filter(function (it) { return it.planNo && !sched.linkedTime[it.actId]; })
+        .map(function (it) { return it.planNo; });
+      var timesP = need.length ? getAll(APP.schedule, '$id in (' + need.join(',') + ')').then(function (recs) {
+        var m = {};
+        recs.forEach(function (r) { m[String(r.$id.value)] = ampm(fv(r, '開始日時', '')); });
+        return m;
+      }).catch(function () { return {}; }) : kintone.Promise.resolve({});
+      return timesP.then(function (planTime) {
+        // 予定に紐付いた活動履歴は、予定の開始時刻で午前/午後(予定の活動履歴No → 活動履歴の予定No の順)
+        all[0].forEach(function (it) {
+          var t = sched.linkedTime[it.actId] || (it.planNo && planTime[it.planNo]);
+          if (t) {
+            it.row.time = t;
+            if (it.visit) it.visitAt = t;
+          }
+        });
+        return { res: [all[0], all[1], all[2], sched.items], sched: sched };
       });
-      return { res: [all[0], all[1], all[2], sched.items], sched: sched };
     });
   }
 
   // 集めた記録を日報のレコードに当てはめる。only: 足してよい記録の判定(省略で全部)
   function apply(record, data, only) {
     var res = data.res, sched = data.sched;
-    // 架電件数・飛び込みの訪問は、取り込み済みかに関係なく、その日の全件から数える
-    var calls = 0, walkAm = 0, walkPm = 0;
+    // 架電件数・訪問件数は、取り込み済みかに関係なく、その日の全件から数える
+    // 訪問 = 活動履歴の商談(対応者に報告者) + ネタリストの予定の無い飛び込み(P2の例外)。予定の「完了」は数えない
+    var calls = 0, visitAm = 0, visitPm = 0;
     res.forEach(function (items) {
       items.forEach(function (it) {
         if (it.call) calls++;
-        var w = it.walk || (it.visitAt && sched.linked.indexOf(it.actId) < 0 ? it.visitAt : null);
-        if (w === '午前') walkAm++;
-        if (w === '午後') walkPm++;
+        var w = it.walk || it.visitAt || null;
+        if (w === '午前') visitAm++;
+        if (w === '午後') visitPm++;
       });
     });
     var rows = fv(record, TABLE, []).filter(function (r) { return !isBlankRow(r); });
@@ -434,8 +462,8 @@
       });
     });
     var out = { counts: counts, total: counts[0] + counts[1] + counts[2] + counts[3], merged: merged, added: added };
-    // 訪問件数(予定+飛び込み)・架電件数: 数えた方が手入力より多いときだけ上書き
-    out.visit = [sched.am + walkAm, sched.pm + walkPm];
+    // 訪問件数(活動履歴+飛び込み)・架電件数: 数えた方が手入力より多いときだけ上書き
+    out.visit = [visitAm, visitPm];
     out.visitChanged = false;
     [['訪問_午前', out.visit[0]], ['訪問_午後', out.visit[1]]].forEach(function (v) {
       var cur = Number(fv(record, v[0], 0)) || 0;
@@ -456,6 +484,8 @@
     if (out.total) record[TABLE].value = rows;
     out.changed = !!(out.total || out.visitChanged || out.callChanged || out.planAdded);
     out.schedOk = sched.ok;
+    out.pending = sched.pending || [];
+    out.broken = sched.broken || [];
     return out;
   }
 
@@ -473,10 +503,24 @@
   function summary(o) {
     return '活動履歴 ' + o.counts[0] + '件 / 案件管理 ' + o.counts[1] + '件 / ネタリスト ' + o.counts[2] + '件 / スケジュール ' + o.counts[3] + '件' +
       (o.merged ? '\n(うち ' + o.merged + '件は、同じ会社の行にまとめました)' : '') +
-      (o.visitChanged ? '\n訪問件数を予定・予定外の訪問から入れました(午前' + o.visit[0] + '・午後' + o.visit[1] + ')' : '') +
+      (o.visitChanged ? '\n訪問件数を活動履歴の訪問記録・飛び込みから入れました(午前' + o.visit[0] + '・午後' + o.visit[1] + ')' : '') +
       (o.callChanged ? '\n架電件数を入れました(' + o.calls + '件)' : '') +
       (o.planAdded ? '\n翌営業日の予定を「明日の目標」に追記しました' : '') +
-      (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした');
+      (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした') + pendingNote(o);
+  }
+  // 予定のままの訪問の注意(2026-10-25 P2)。件数にも明細にも入れていないことを伝える
+  function pendingNote(o) {
+    var p = o.pending || [], b = o.broken || [];
+    var out = '';
+    if (p.length) {
+      out += '\n\n⚠ 予定のままの訪問が ' + p.length + '件あります(' + p.join('、') + ')。訪問件数・明細には入れていません。\n' +
+        '訪問した場合はスケジュールで「✅ 訪問完了(報告を書く)」、行かなかった場合は「中止」にしてください。完了にして記録した後に取り込み直すと件数に入ります。';
+    }
+    if (b.length) {
+      out += '\n\n⚠ 「完了」なのに活動履歴に記録の無い訪問が ' + b.length + '件あります(' + b.join('、') + ')。訪問件数・明細には入れていません。\n' +
+        '管理者に連絡してください(訪問の完了は「✅ 訪問完了(報告を書く)」から記録します)。';
+    }
+    return out;
   }
   // ボタンの下に結果を出す(自動取り込みでは確認ダイアログを出さない)
   function notice(text) {
@@ -546,9 +590,9 @@
       if (!o.changed) {
         if (manual) {
           window.alert('取り込める新しい情報はありませんでした。\n(活動履歴・案件管理・ネタリスト・スケジュールに、この日・この報告者の入力が無いか、すべて取り込み済みです)' +
-            (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした'));
+            (o.schedOk ? '' : '\n※スケジュールは閲覧権限が無いため取り込めませんでした') + pendingNote(o));
         } else {
-          notice(head + t.date + ' の活動(活動履歴・案件・ネタリスト・予定)はまだありません。保存するときに、それまでに入った分を自動で取り込みます。');
+          notice(head + t.date + ' の活動(活動履歴・案件・ネタリスト・予定)はまだありません。保存するときに、それまでに入った分を自動で取り込みます。' + pendingNote(o));
         }
         return;
       }
