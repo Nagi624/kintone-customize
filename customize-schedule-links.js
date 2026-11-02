@@ -23,6 +23,8 @@
  *   (2026-10-26 P2 訪問実績の正本=活動履歴17: 予定のある訪問は「実際に訪問した人」を選ぶ(初期候補=予定の参加者、停止中の人は選べない、
  *    本人も外せる、0人は不可)。全員を活動履歴の対応者に入れ、「予定No」に予定の番号を入れる。作る前に予定を取り直し、
  *    予定Noで活動履歴を探す(同じ予定から2件作らない)。予定の無い飛び込みは今までどおり「架電履歴」欄に種別=飛び込みの行で残す(架電ではなく訪問。日報では訪問件数に数える。P2の例外))
+ *   (2026-11-02: 「時刻」の欄を出す(予定のある訪問は活動履歴17の初期値で入るので出さない)。触らなければ今まで
+ *    どおり今日なら保存した時刻・今日以外は空。直せばその時刻。架電では「前回の架電」の日時・結果・担当を出す)
  * - 案件管理の「コール業務」は入力できなくする(2026-10-16 使用終了。架電の結果は顧客管理の作業パネルから活動履歴へ)。
  */
 (function () {
@@ -86,6 +88,11 @@
 
   function api(path, method, params) { return kintone.api(kintone.api.url(path, true), method, params); }
   function pad(n) { return (n < 10 ? '0' : '') + n; }
+  function esc(s) {
+    return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
   function label(iso) {
     var d = new Date(iso);
     return (d.getMonth() + 1) + '/' + d.getDate() + '(' + WEEKDAYS[d.getDay()] + ') ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
@@ -231,6 +238,22 @@
   }
 
   function nowHm() { return TD().nowHm(); }
+
+  // 架電履歴のうち一番新しい架電(日付→時刻の順。時刻の無い行は同じ日の中で古い扱い)を「前回の架電」として出す
+  function prevCallHtml(r) {
+    var last = null;
+    fv(r, '架電履歴', []).forEach(function (row) {
+      var v = row.value;
+      if (fv(v, '履歴種別', '') !== '架電' || !fv(v, '履歴日付', '')) return;
+      var key = fv(v, '履歴日付', '') + ' ' + fv(v, '履歴時刻', '');
+      if (!last || key > last.key) last = { key: key, v: v };
+    });
+    if (!last) return '';
+    var v = last.v, hm = fv(v, '履歴時刻', '');
+    var who = fv(v, '履歴担当', []).map(function (u) { return u.name; }).join('・');
+    return '<div class="call-prev" style="margin-bottom:10px;padding:6px 10px;border:1px solid #cbd5e1;background:#f8fafc;border-radius:6px;font-size:13px">🕘 前回の架電: ' +
+      esc(TD().label(fv(v, '履歴日付', ''))) + (hm ? ' ' + esc(hm) : '') + ' ' + esc(fv(v, '履歴結果', '')) + (who ? '(' + esc(who) + ')' : '') + '</div>';
+  }
 
   // その日の自分の訪問予定(まだ「予定」のもの)で、このネタが訪問先のもの。見られない人は無しとして扱う
   function plansOfLead(leadId, day) {
@@ -429,9 +452,11 @@
     m.style.cssText = 'background:#fff;border-radius:8px;padding:16px;width:100%;max-width:420px;max-height:calc(100vh - 24px);overflow:auto;box-sizing:border-box;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)';
     var ps = plan ? new Date(fv(plan, '開始日時', '')) : null;
     m.innerHTML = '<div style="font-size:16px;font-weight:bold;margin-bottom:10px">' + (kind === '飛び込み' ? '🚶 訪問を記録' : '📞 架電を記録') + '</div>' +
-      '<div style="color:#475569;margin-bottom:6px">' + (kind === '飛び込み' ? '訪問した日' : '架電した日') + '</div>' +
-      '<input class="call-date" type="date" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px">' +
-      '<div class="call-date-note" style="color:#b45309;font-size:12px;margin:4px 0 10px"></div>' +
+      (kind === '飛び込み' ? '' : prevCallHtml(r)) +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap"><div><div style="color:#475569;margin-bottom:6px">' + (kind === '飛び込み' ? '訪問した日' : '架電した日') + '</div>' +
+      '<input class="call-date" type="date" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px"></div>' +
+      (plan ? '' : '<div><div style="color:#475569;margin-bottom:6px">時刻</div><input class="call-time" type="time" style="padding:8px;border:1px solid #cbd5e1;border-radius:6px"></div>') +
+      '</div><div class="call-date-note" style="color:#b45309;font-size:12px;margin:4px 0 10px"></div>' +
       (plan ? '<div style="margin-bottom:10px;padding:8px 10px;border:1px solid #86efac;background:#f0fdf4;border-radius:6px;font-size:13px">📅 ' +
         (ps.getMonth() + 1) + '/' + ps.getDate() + ' ' + pad(ps.getHours()) + ':' + pad(ps.getMinutes()) +
         ' の訪問予定の訪問として記録し、予定を「完了」にします(スケジュールの「✅ 訪問完了」と同じ。活動履歴に残ります)。</div>' +
@@ -471,11 +496,21 @@
     });
     var dateIn = m.querySelector('.call-date');
     dateIn.value = day;
+    // 時刻: 触らなければ今日なら保存した時刻・今日以外は空(日報の午前/午後に使うため当てにならない時刻は入れない)
+    var timeIn = m.querySelector('.call-time');
+    var timeTouched = false;
+    function syncTime() { if (timeIn && !timeTouched) timeIn.value = dateIn.value === todayYmd() ? nowHm() : ''; }
+    if (timeIn) {
+      timeIn.addEventListener('input', function () { timeTouched = true; });
+      timeIn.addEventListener('change', function () { timeTouched = true; });
+    }
+    syncTime();
     // 何日の業務として記録するかを常に出す(日付は変えない。前の日の分は利用者が選ぶ)
-    function dateNote() { TD().renderNote(m.querySelector('.call-date-note'), dateIn.value, '時刻は空になります。'); }
+    function dateNote() { TD().renderNote(m.querySelector('.call-date-note'), dateIn.value, timeIn ? '時刻が分かれば入れてください。' : ''); }
     dateNote();
     function close() { if (bg.parentNode) document.body.removeChild(bg); }
     dateIn.addEventListener('change', dateNote);
+    dateIn.addEventListener('change', syncTime);
     // 訪問は、その日の訪問予定で記録し直せるように開き直す(書いたメモは引き継ぐ)
     function reopen(v) {
       var keep = { memo: m.querySelector('.call-memo').value, next: nextIn.value };
@@ -512,8 +547,9 @@
           return fv(row.value, '履歴結果', '') || fv(row.value, '履歴メモ', '');
         }).map(rowForPut);
         rows.push({ value: {
-          // 今日以外の日の分は、記録した時刻が当てにならないので時刻を空にする
-          履歴日付: { value: d }, 履歴時刻: { value: d === todayYmd() ? nowHm() : '' }, 履歴種別: { value: kind },
+          // 時刻を直していなければ、今日の分は保存した時刻・今日以外の日は空(記録した時刻が当てにならないため)
+          // (開いたまま日付をまたいだときは、画面に出ている時刻=開いたときの時刻)
+          履歴日付: { value: d }, 履歴時刻: { value: timeTouched || d !== todayYmd() ? (timeIn ? timeIn.value : '') : nowHm() }, 履歴種別: { value: kind },
           履歴担当: { value: [{ code: me.code }] }, 履歴結果: { value: chosen }, 履歴メモ: { value: memo }
         } });
         var upd = { 架電履歴: { value: rows }, 次回架電予定日: { value: next || null } };

@@ -8,6 +8,7 @@
  *   - 訪問した: ネタを登録してネタの画面を開き、「🚶 訪問を記録」を自動で開く(今日の訪問予定の完了などは customize-schedule-links.js と同じ)
  *   日付の初期値は日本時間の今日(2026-10-25 P1: 朝6時前でも前日にしない。前の日の分は利用者が選ぶ)。
  *   日付欄の下に「何日の業務として記録するか」を常に出す(customize-business-date.js の renderNote)。今日以外の日は時刻を空にする
+ *   (2026-11-02: 「時刻」の欄を出す。触らなければ上のとおり(今日なら保存した時刻)、直せばその時刻)
  * - 顧客管理・ネタリストに同じお店(会社名か電話番号)があれば登録させず、そちらを案内する
  * - 確認ステータス=稼働中・確認者=自分・業種確認メモ「Googleマップから登録」。座標は毎時の自動処理で入る
  * - GoogleのAPIは使わない(取得値は規約で30日を超えて保存できない。利用者が貼った文字だけを読む)
@@ -90,7 +91,7 @@
       '<label>GoogleマップのURL(あれば)</label><input type="url" class="p-url">' +
       '<div class="p-dup"></div>' +
       '<div class="lp-box p-callbox"><b>架電の結果</b>:選ぶと架電履歴にも残ります(選ばなければ「未着手」で登録)' +
-      '<label>架電した日</label><input type="date" class="p-date"><div class="p-date-note lp-sub" style="margin:4px 0 0;color:#b45309"></div>' +
+      '<div class="lp-row2"><div><label>架電した日</label><input type="date" class="p-date"></div><div><label>時刻</label><input type="time" class="p-time"></div></div><div class="p-date-note lp-sub" style="margin:4px 0 0;color:#b45309"></div>' +
       '<div class="lp-results" style="margin-top:8px"></div>' +
       '<div class="p-lose lp-sub" style="display:none;margin:6px 0 0;color:#991b1b">失注: 進捗状況を「失注」で登録し、架電リストに出しません。次回架電予定日は入れません。</div>' +
       '<label>メモ</label><input type="text" class="p-memo">' +
@@ -115,9 +116,17 @@
     setMode(mode);
     var dateIn = $('.p-date');
     dateIn.value = today();
+    // 時刻: 触らなければ今日なら保存した時刻・今日以外は空(日報の午前/午後に使うため当てにならない時刻は入れない)
+    var timeIn = $('.p-time');
+    var timeTouched = false;
+    function syncTime() { if (!timeTouched) timeIn.value = dateIn.value === today() ? nowHm() : ''; }
+    timeIn.addEventListener('input', function () { timeTouched = true; });
+    timeIn.addEventListener('change', function () { timeTouched = true; });
+    syncTime();
     // 何日の業務として記録するかを常に出す(日付は変えない。前の日の分は利用者が選ぶ)
-    function dateNote() { TD().renderNote($('.p-date-note'), dateIn.value, '時刻は空になります。'); }
+    function dateNote() { TD().renderNote($('.p-date-note'), dateIn.value, '時刻が分かれば入れてください。'); }
     dateIn.addEventListener('change', dateNote);
+    dateIn.addEventListener('change', syncTime);
     dateNote();
 
     var chosen = '';
@@ -210,8 +219,9 @@
         Object.keys(vals).forEach(function (k) { if (vals[k] && (props[k] || !Object.keys(props).length)) rec[k] = { value: vals[k] }; });
         if (res) {
           rec.架電履歴 = { value: [{ value: {
-            // 今日以外の日の分は、記録した時刻が当てにならないので時刻を空にする
-            履歴日付: { value: day }, 履歴時刻: { value: day === today() ? nowHm() : '' }, 履歴種別: { value: '架電' },
+            // 時刻を直していなければ、今日の分は保存した時刻・今日以外の日は空(記録した時刻が当てにならないため)
+            // (開いたまま日付をまたいだときは、画面に出ている時刻=開いたときの時刻)
+            履歴日付: { value: day }, 履歴時刻: { value: timeTouched || day !== today() ? timeIn.value : nowHm() }, 履歴種別: { value: '架電' },
             履歴担当: { value: [{ code: me.code }] }, 履歴結果: { value: res }, 履歴メモ: { value: $('.p-memo').value.trim() }
           } }] };
           if (res === '獲得') rec.アポ獲得者 = { value: [{ code: me.code }] };

@@ -42,7 +42,8 @@
  * 2026-10-26(P2 訪問実績の正本=活動履歴17): 🚶 訪問を記録で予定を選んだときは、「実際に訪問した人」を選ぶ(初期候補=予定の参加者、
  *   停止中の人は選べない、本人も外せる、0人は不可)。全員を活動履歴の対応者に入れ、「予定No」に予定の番号を入れる。
  *   作る前に予定を取り直し、予定Noで活動履歴を探す(同じ予定から2件作らない)。予定とは別の訪問(突発)は今までどおり押した人だけ
- * 2026-11-02: 架電に「時刻」(活動履歴17「対応時刻」)。触らなければ保存した時刻(日本時間)、かけた時刻に直すこともできる。
+ * 2026-11-02: 架電に「時刻」(活動履歴17「対応時刻」)。触らなければ今日の分は保存した時刻(日本時間)・前の日の分は空、
+ *   かけた時刻に直すこともできる(ネタリストの架電履歴と同じ決め方)。
  *   最近のやりとりに時刻も出す(時刻が無い古い記録は日付だけ)。訪問など他の入口は欄の初期値(保存した時刻)で入る
  */
 (function () {
@@ -403,7 +404,7 @@
     w.innerHTML = '<div class="chub-row2"><div><label style="margin-top:0">架電した日</label><input type="date" class="c-date"></div>' +
       '<div><label style="margin-top:0">時刻</label><input type="time" class="c-time"></div></div>' +
       '<div class="chub-sub c-date-note" style="margin:4px 0 0;color:#b45309"></div>' +
-      '<div class="chub-sub" style="margin:2px 0 0">時刻はそのままなら保存した時刻になります。後でまとめて入れるときは、かけた時刻に直してください。</div>' +
+      '<div class="chub-sub" style="margin:2px 0 0">今日の分は、時刻をそのままにすると保存した時刻が入ります。後でまとめて入れるときは、かけた時刻に直してください。</div>' +
       '<label>結果</label><div class="chub-results"></div>' +
       '<div class="chub-apo c-lose" style="display:none;border-color:#fca5a5;background:#fef2f2"><b style="color:#991b1b">失注 — 今後はかけません</b>' +
       (open.length ? '<label style="display:flex;gap:6px;align-items:center;margin:8px 0 0"><input type="checkbox" class="c-lose-deal" checked style="width:auto">進行中の案件(' +
@@ -424,12 +425,14 @@
     var dateIn = w.querySelector('.c-date');
     dateIn.value = workDay();
     dateNote(dateIn, w.querySelector('.c-date-note'));
-    // 時刻: 触らなければ保存した時刻(日本時間)を入れる。利用者が変えたらその時刻
+    // 時刻: 触らなければ今日なら保存した時刻(日本時間)・今日以外の日は空(ネタリストと同じ)。利用者が変えたらその時刻
     var timeIn = w.querySelector('.c-time');
     var timeTouched = false;
-    timeIn.value = TD().nowHm();
+    function syncTime() { if (!timeTouched) timeIn.value = dateIn.value === workDay() ? TD().nowHm() : ''; }
     timeIn.addEventListener('input', function () { timeTouched = true; });
     timeIn.addEventListener('change', function () { timeTouched = true; });
+    dateIn.addEventListener('change', syncTime);
+    syncTime();
     var nextIn = opts.hasNextField ? w.querySelector('.c-next') : null;
     CALL_RESULTS.forEach(function (c) {
       var b = el('button', { type: 'button' }, esc(c.v) + '<small>' + esc(c.hint) + '</small>');
@@ -475,7 +478,8 @@
         if (chosen === 'アポ獲得' && !picker.get().length) { alert('商談に行く人を選んでください'); return null; }
         return {
           open: open, chosen: chosen, memo: w.querySelector('.c-memo').value.trim(), date: dateIn.value,
-          time: timeTouched && timeIn.value ? timeIn.value : TD().nowHm(),
+          // 開いたまま日付をまたいだときは、画面に出ている時刻(開いたときの時刻)
+          time: timeTouched || dateIn.value !== workDay() ? timeIn.value : TD().nowHm(),
           loseDeal: chosen === '失注' && !!w.querySelector('.c-lose-deal') && w.querySelector('.c-lose-deal').checked,
           next: nextIn ? nextIn.value : '', prevNext: opts.nextValue || '', hasNextField: opts.hasNextField,
           apoDt: apoDt, apoUsers: picker.get(),
@@ -569,7 +573,7 @@
     // 2. 活動履歴に1件(案件があれば紐付け) 3. 次回連絡日
     return dealP.then(function (dealNo) {
       var act = {
-        タイトル: { value: '架電: ' + company }, 対応日付: { value: p.date || workDay() }, 対応時刻: { value: p.time || TD().nowHm() },
+        タイトル: { value: '架電: ' + company }, 対応日付: { value: p.date || workDay() }, 対応時刻: { value: p.time === undefined ? TD().nowHm() : p.time },
         対応者: { value: [{ code: me.code }] }, 対応種別: { value: '架電' }, コール業務: { value: chosen },
         内容: { value: memo || chosen }, 会社名: { value: company }
       };

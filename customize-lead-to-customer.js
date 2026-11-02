@@ -14,6 +14,7 @@
  *   (コピーではなく「移動」として扱う)
  * - 誤操作防止のため、作成前に確認ダイアログを一度挟む(削除される旨も明記)
  * - PC・スマートフォンブラウザ両対応
+ * - 架電履歴の時刻は活動履歴の「対応時刻」へ移す(2026-11-02。時刻の無い行は空。渡さないと移した時刻が初期値で入るため)
  */
 (function () {
   "use strict";
@@ -147,6 +148,7 @@
       "内容": { value: content },
     };
     if (date) rec["対応日付"] = { value: date };
+    rec["対応時刻"] = { value: v["履歴時刻"] && v["履歴時刻"].value ? v["履歴時刻"].value : "" };
     if (tanto.length) rec["対応者"] = { value: tanto.map(function (u) { return { code: u.code }; }) };
     return rec;
   }
