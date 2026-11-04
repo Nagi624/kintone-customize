@@ -39,6 +39,7 @@
  * 前提の欄: 活動履歴17「コール業務」(ドロップダウン)、顧客管理18「次回連絡日」(日付)・「GoogleマップURL」(リンク)。無い場合はその部分を出さない。
  * 受注日(2026-10-24): 訪問の記録・案件を作る/進めるで商談フェーズを受注にしたら、案件19の「受注日」が空のときだけ
  *   訪問した日(案件のダイアログは「受注日」欄で選んだ日。初期値は日本時間の今日)を入れる(setWonDate)
+ *   2026-11-04(Q12): 受注以外のフェーズにしたら受注日を空にする(案件19の customize-deal-won-date.js と同じ)。空にしたことは保存後の知らせに出す
  * 2026-10-26(P2 訪問実績の正本=活動履歴17): 🚶 訪問を記録で予定を選んだときは、「実際に訪問した人」を選ぶ(初期候補=予定の参加者、
  *   停止中の人は選べない、本人も外せる、0人は不可)。全員を活動履歴の対応者に入れ、「予定No」に予定の番号を入れる。
  *   作る前に予定を取り直し、予定Noで活動履歴を探す(同じ予定から2件作らない)。予定とは別の訪問(突発)は今までどおり押した人だけ
@@ -89,6 +90,12 @@
   // 商談フェーズを受注にしたら、受注日が空のときだけ day を入れる(2026-10-24。日報の受注の取り込みと受注の集計に使う)
   function setWonDate(upd, deal, phase, day) {
     if (phase === '受注' && (!deal || (fv(deal, '商談フェーズ', '') !== '受注' && !fv(deal, '受注日', '')))) upd.受注日 = { value: day };
+    // 受注以外にしたら受注日を空にする(Q12。受注を取り消した案件に古い受注日を残さない)
+    else if (phase && phase !== '受注' && deal && fv(deal, '受注日', '')) upd.受注日 = { value: null };
+  }
+  // setWonDate で受注日を空にしたときの知らせ(空にしていなければ '')
+  function wonClearedMsg(upd, deal) {
+    return upd.受注日 && !upd.受注日.value ? '受注ではなくなったので、受注日(' + TD().label(fv(deal, '受注日', '')) + ')を空にしました。' : '';
   }
   // 日付の入力欄。何日の業務として記録するかを常に出す(日付は変えない。決定1・案A)
   function dateNote(input, note) {
@@ -563,7 +570,9 @@
     // 1'. 失注で「進行中の案件も失注にする」なら、案件のフェーズを失注に(活動履歴は最初の案件に紐付ける)
     if (chosen === '失注' && p.loseDeal && open.length) {
       dealP = kintone.Promise.all(open.map(function (d) {
-        return api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: d.$id.value, record: { 商談フェーズ: { value: '失注' } } });
+        var rec = { 商談フェーズ: { value: '失注' } };
+        setWonDate(rec, d, '失注', null); // 受注日が残っていれば空にする(Q12)
+        return api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: d.$id.value, record: rec });
       })).then(function () {
         msgs.push('進行中の案件(' + open.length + '件)を失注にしました。');
         return open[0].$id.value;
@@ -868,7 +877,7 @@
           setWonDate(upd, deal, $('.v-phase').value, today); // 訪問した日を受注日に
         }
         // 受注日は実際に受注した日。未来の日付は入れない(2026-10-25 P1)
-        if (upd.受注日 && today > workDay()) {
+        if (upd.受注日 && upd.受注日.value && today > workDay()) {
           alert('受注にするときは、訪問した日が受注日になります。受注日に未来の日付は入れられません。訪問した日を確かめてください。');
           return;
         }
@@ -883,6 +892,7 @@
           linked = st.found || null;
           return Object.keys(upd).length ? api('/k/v1/record', 'PUT', { app: DEAL_APP_ID, id: deal.$id.value, record: upd }).then(function () {
             msgs.push('案件の' + Object.keys(upd).join('・') + 'を更新しました。');
+            if (wonClearedMsg(upd, deal)) msgs.push(wonClearedMsg(upd, deal));
           }) : null;
         }).then(function () {
           if (linked) return null;
@@ -997,7 +1007,7 @@
     function needWonDate() {
       var probe = {};
       setWonDate(probe, current, m.querySelector('.d-phase').value, 'x');
-      return !!probe.受注日;
+      return !!(probe.受注日 && probe.受注日.value);
     }
     function toggleWon() { m.querySelector('.d-won-box').style.display = needWonDate() ? '' : 'none'; }
     m.querySelector('.d-phase').addEventListener('change', toggleWon);
@@ -1023,6 +1033,7 @@
         売上: { value: amount === '' ? null : amount }, 商談担当者: { value: users(picked) }
       };
       setWonDate(rec, current, phase, wonIn.value);
+      var wonMsg = wonClearedMsg(rec, current);
       var prev = current ? fv(current, '次回商談日', '') : '';
       var custNo = fv(r, '顧客No', '') || fv(r, '$id', '');
       btn.disabled = true;
@@ -1039,7 +1050,7 @@
         return pushToSchedule(dealNo, { 会社名: fv(r, '会社名', ''), 提案商品: item, 顧客No_: custNo, 商談担当者: picked, 主担当: [me], 次回商談日: next }, prev);
       }).then(function (msg) {
         close();
-        alert('案件を保存しました。' + (msg ? '\n' + msg : ''));
+        alert('案件を保存しました。' + (wonMsg ? '\n' + wonMsg : '') + (msg ? '\n' + msg : ''));
         location.reload();
       }).catch(function (err) {
         btn.disabled = false;

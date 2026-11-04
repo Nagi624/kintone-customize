@@ -13,7 +13,8 @@
  *    取り込むのは その日新規登録(失注以外)→見込み と 受注→受注(金額=売上) だけ(2026-10-20)。
  *    それ以外の更新(管理者の一括修正・軽い編集も拾っていた)は取り込まない。商談の中身は活動履歴・予定から入る。
  *    受注は、別の日報で同じ案件の受注を報告済みなら取り込まない(二重計上しない)
- *    受注は「受注日」がその日の案件(2026-10-24〜。作成者・更新者・主担当=報告者)。受注日が空(未確定)・別の日の受注は数えず、
+ *    受注は「受注日」がその日の案件(2026-10-24〜)。主担当(複数なら最初の1人)=報告者の日報だけに入れる(Q6 2026-11-04。
+ *    以前は作成者・更新者・主担当のだれか)。受注日が空(未確定)・別の日の受注は数えず、
  *    新規登録の日でも見込みにしない(P3 2026-11-04)
  * 3. ネタリスト(app29):
  *    a. 架電履歴の行のうち 日付=日付 かつ 担当=報告者
@@ -237,11 +238,13 @@
   function fromDeals(userCodes, codes, date, selfId) {
     // その日に登録した案件は、後日(日付が変わった後など)に更新されても拾えるよう、作成日時でも探す(2026-10-24。
     // 以前は更新日時だけで探していたため、0時を過ぎてから案件を直すと、前日の日報から新規登録の行が消えていた)
-    // 受注は受注日(2026-10-24新設)がその日の案件。後日だれかが直して更新者が変わっても拾えるよう、主担当でも探す
+    // 受注は受注日(2026-10-24新設)がその日の案件。主担当の日報だけに入れる(Q6 2026-11-04。グラフの「私の受注売上」と同じ人)
     var q = '((作成者 in (' + codes + ') or 更新者 in (' + codes + ')) and ((' + onDateQuery('作成日時', date) +
-      ') or (' + onDateQuery('更新日時', date) + '))) or ((作成者 in (' + codes + ') or 更新者 in (' + codes +
-      ') or 主担当 in (' + codes + ')) and 受注日 = "' + date + '") order by 案件No_ asc';
+      ') or (' + onDateQuery('更新日時', date) + '))) or (主担当 in (' + codes + ') and 受注日 = "' + date +
+      '") order by 案件No_ asc';
     function mine(d, code) { return userCodes.indexOf((fv(d, code, {}) || {}).code) !== -1; }
+    // 主担当が複数なら最初の1人(同行者・入力を手伝った人の日報には入れない)
+    function mainOwner(d) { var u = fv(d, '主担当', []); return u.length ? userCodes.indexOf(u[0].code) !== -1 : false; }
     return getAll(APP.deal, q).then(function (recs) {
       return Promise.all(recs.map(function (d) {
         var no = fv(d, '案件No_', '');
@@ -256,7 +259,7 @@
         // 受注は受注日の日報だけで受注にする(P3 2026-11-04)。受注日が空(未確定)・別の日の受注は、
         // その日に新規登録した案件でも見込みにしない(受注を見込みと数えない)
         if (phase === '受注') {
-          if (wonDate !== date) return null;
+          if (wonDate !== date || !mainOwner(d)) return null;
           return alreadyReportedWon(no, selfId).then(function (reported) {
             if (reported) return null; // 別の日報で報告済み
             base.kubun = '受注';
