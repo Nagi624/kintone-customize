@@ -48,7 +48,7 @@
   console.log("[customer-map] APP_ID_CUSTOMER=" + APP_ID_CUSTOMER);
   var APP_ID_ACTIVITY = "17"; // 活動履歴
   var STALE_DAYS_THRESHOLD = 90;
-  var RANK_COLOR = { A: "#e53935", B: "#fb8c00", C: "#1e88e5", D: "#757575" };
+  var RANK_COLOR = { S: "#8e24aa", A: "#e53935", B: "#fb8c00", C: "#1e88e5", D: "#757575" };
   var mapInstance = null;
   var allRecords = []; // フェッチ済みの全レコードをキャッシュ(フィルタ時に再取得しない)
   var checkedRanks = {}; // rankごとのチェック状態
