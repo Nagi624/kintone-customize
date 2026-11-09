@@ -12,7 +12,7 @@
 (function () {
   'use strict';
 
-  var GAS_URL = '';  // GAS を公開したら URL を入れる(空なら自由な質問の欄を出さず、ボタンだけ使える)
+  var GAS_URL = 'https://script.google.com/macros/s/AKfycbz5SNjMW-f5KOiYAXmfXNlfTiqv8nB-PURoOaB9GsMAxb7ps4qbzqoAxqziTpBlZZOANQ/exec';  // お客様AI(GAS、taimei.sol)。空なら自由な質問の欄を出さず、ボタンだけ
   var PREVIEW_USERS = ['taimei.sol@gmail.com'];
   var APP = { activity: 17, customer: 18, deal: 19, contact: 20, lead: 29, schedule: 34 };
   var DAY = 86400000;
