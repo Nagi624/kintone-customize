@@ -14,6 +14,7 @@
 
   var GAS_URL = 'https://script.google.com/macros/s/AKfycbz5SNjMW-f5KOiYAXmfXNlfTiqv8nB-PURoOaB9GsMAxb7ps4qbzqoAxqziTpBlZZOANQ/exec';  // お客様AI(GAS、taimei.sol)。空なら自由な質問の欄を出さず、ボタンだけ
   var PREVIEW_USERS = ['taimei.sol@gmail.com'];
+  var FEEDBACK_APP = 55;  // 「違った」の保存先アプリ番号(お客様AI 改善メモ)。null なら「違った」ボタンを出さない
   var APP = { activity: 17, customer: 18, deal: 19, contact: 20, lead: 29, schedule: 34 };
   var DAY = 86400000;
 
@@ -71,21 +72,94 @@
       { id: 'my_counts', label: '今月の自分の件数', company: false },
       { id: 'team_counts', label: '今月のチームの件数', company: false },
       { id: 'follow_up', label: '今日連絡する先', company: false },
+      { id: 'call_list', label: '架電した先を絞る', company: false },
     ];
     function presetPlan(id) {
       var pr = PRESETS.filter(function (x) { return x.id === id; })[0];
       if (!pr) return null;
+      var cl = id === 'call_list';
       return {
         intent: id, target: pr.company ? 'current' : 'none', companyKeyword: '',
-        period: { type: id === 'my_counts' || id === 'team_counts' ? 'this_month' : 'none', month: '', days: 0 },
-        filters: { kind: '', result: '', progress: '', area: '', category: '' },
-        who: id === 'my_counts' ? 'me' : 'all',
+        period: cl ? { type: 'last_n_days', month: '', days: 7 } : { type: id === 'my_counts' || id === 'team_counts' ? 'this_month' : 'none', month: '', days: 0 },
+        filters: { kind: cl ? '架電' : '', result: '', results: [], progress: '', area: '', category: '' },
+        who: id === 'my_counts' || cl ? 'me' : 'all',
       };
+    }
+    // 探し方の形をそろえる(古いGASの result 1つ → results)
+    function normPlan(plan) {
+      var p = JSON.parse(JSON.stringify(plan || {}));
+      p.period = p.period || { type: 'none', month: '', days: 0 };
+      var f = p.filters = p.filters || {};
+      ['kind', 'result', 'progress', 'area', 'category'].forEach(function (k) { if (typeof f[k] !== 'string') f[k] = ''; });
+      if (!Array.isArray(f.results)) f.results = [];
+      if (f.result && f.results.indexOf(f.result) < 0) f.results.unshift(f.result);
+      f.result = f.results[0] || '';
+      p.who = p.who === 'me' ? 'me' : 'all';
+      if (p.intent === 'find_company' && f.results.length) { p.intent = 'call_list'; f.progress = ''; }  // 電話の結果が付いた会社探し = 架電した先
+      return p;
+    }
+    var COMPANY_INTENTS = ['last_contact', 'history', 'contacts', 'deals', 'next_action', 'before_call', 'refusals'];
+    // 質問の言葉から、近いボタンを選ぶ(AIが読み取れなかったとき)
+    var HINTS = [
+      [/前回|最後|この前|直近の対応/, 'last_contact'], [/経緯|流れ|今まで|これまで/, 'history'],
+      [/担当|決裁|連絡先|誰に|電話番号/, 'contacts'], [/案件|見積|受注|確度|商談の状況/, 'deals'],
+      [/次|予定|いつ/, 'next_action'], [/前に|準備|どんな/, 'before_call'], [/断|失注|ブロック|理由/, 'refusals'],
+      [/かけた|架電した|電話した|訪問した|行った|不在|コールのみ|一覧|リスト|店/, 'call_list'],
+      [/チーム|全体|みんな|全員/, 'team_counts'], [/件数|何件|数/, 'my_counts'], [/今日|連絡する|期限|忘れ/, 'follow_up'],
+    ];
+    function suggest(text, hasCompany) {
+      var out = [];
+      HINTS.forEach(function (h) {
+        if (out.length >= 3 || !h[0].test(String(text || '')) || out.indexOf(h[1]) >= 0) return;
+        if (!hasCompany && COMPANY_INTENTS.indexOf(h[1]) >= 0) return;
+        out.push(h[1]);
+      });
+      var fill = hasCompany ? ['last_contact', 'before_call', 'history'] : ['call_list', 'follow_up', 'my_counts'];
+      fill.forEach(function (id) { if (out.length < 3 && out.indexOf(id) < 0) out.push(id); });
+      return out;
+    }
+
+    // ---- 会社名のゆれ(株式会社の有無・全角半角・ひらがなカタカナ・空白) ----
+    var CORP = /株式会社|有限会社|合同会社|合資会社|合名会社|一般社団法人|一般財団法人|医療法人社団|医療法人|社会福祉法人|NPO法人|\(株\)|\(有\)|\(同\)|㈱|㈲|様$|さん$|御中$/g;
+    function toHalf(s) { return String(s || '').replace(/[！-～]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); }).replace(/　/g, ' '); }
+    function toFull(s) { return String(s || '').replace(/[!-~]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0xFEE0); }); }
+    function kata(s) { return String(s || '').replace(/[ぁ-ゖ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) + 0x60); }); }
+    function hira(s) { return String(s || '').replace(/[ァ-ヶ]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0x60); }); }
+    function baseName(s) { return toHalf(s).replace(CORP, '').replace(/\s+/g, ' ').trim(); }
+    // 比べる・まとめるための形(記号・空白を落とし、ひらがな・小文字に)
+    function normName(s) { return hira(baseName(s).replace(/[\s・･.,、。'"’\-‐－―~〜!?]/g, '')).toLowerCase(); }
+    // kintone の「like」に入れる書き方の候補
+    function nameVariants(s) {
+      var b = baseName(s), out = [];
+      [b, b.replace(/ /g, ''), toFull(b), kata(b), hira(b)].forEach(function (x) { x = x.slice(0, 30); if (x && out.indexOf(x) < 0) out.push(x); });
+      return out.slice(0, 5);
+    }
+    // 見つからないときに使う短い切れ端(単語・先頭3文字・末尾3文字)
+    function nameParts(s) {
+      var b = baseName(s), out = [];
+      var add = function (x) { if (x && x.length >= 2 && out.indexOf(x) < 0) out.push(x); };
+      b.split(/[ ・･]+/).forEach(add);
+      var j = b.replace(/[ ・･]+/g, '');
+      if (j.length >= 4) { add(j.slice(0, 3)); add(j.slice(-3)); add(kata(j.slice(0, 3))); add(toFull(j.slice(0, 3))); }
+      return out.slice(0, 6);
+    }
+    function grams(s) { var o = {}; for (var i = 0; i < s.length - 1; i++) o[s.substr(i, 2)] = (o[s.substr(i, 2)] || 0) + 1; return o; }
+    // 名前の近さ 0〜1
+    function similar(a, b) {
+      a = normName(a); b = normName(b);
+      if (!a || !b) return 0;
+      if (a === b) return 1;
+      if (a.indexOf(b) >= 0 || b.indexOf(a) >= 0) return 0.6 + 0.4 * Math.min(a.length, b.length) / Math.max(a.length, b.length);
+      if (a.length < 2 || b.length < 2) return 0;
+      var ga = grams(a), gb = grams(b), n = 0;
+      Object.keys(ga).forEach(function (k) { if (gb[k]) n += Math.min(ga[k], gb[k]); });
+      return 2 * n / (a.length - 1 + b.length - 1);
     }
     var INTENT_LABEL = {
       last_contact: '前回の対応', history: 'これまでの経緯', contacts: '担当者・連絡先', deals: '案件の状況',
       next_action: '次の予定', before_call: '電話・訪問の前に知っておくこと', refusals: '断られた理由',
-      my_counts: '自分の件数', team_counts: 'チームの件数', find_company: '会社・店を探す', follow_up: '今日連絡する先', unknown: '',
+      my_counts: '自分の件数', team_counts: 'チームの件数', find_company: '会社・店を探す', follow_up: '今日連絡する先',
+      call_list: '架電・訪問した先', unknown: '',
     };
 
     // ---- 記録を共通の形に ----
@@ -185,11 +259,67 @@
     function headline(c, f) {
       var calls = (c.kinds['架電'] || 0) + c.leadCalls;
       var visits = (c.kinds['商談（初回）'] || 0) + (c.kinds['商談（2回目以降）'] || 0);
-      if (f.result) return [f.result, (c.results[f.result] || 0) + (c.leadResults[f.result] || 0)];
+      var rs = f.results && f.results.length ? f.results : f.result ? [f.result] : [];
+      if (rs.length) return [rs.join('・'), rs.reduce(function (n, r) { return n + (c.results[r] || 0) + (c.leadResults[r] || 0); }, 0)];
       if (f.kind === '商談') return ['商談(訪問)', visits];
       if (f.kind === '架電') return ['架電', calls];
       if (f.kind) return [f.kind, c.kinds[f.kind] || 0];
       return ['架電', calls, 'アポ獲得', (c.results['アポ獲得'] || 0) + (c.leadResults['アポ獲得'] || 0), '商談(訪問)', visits];
+    }
+
+    // ---- 架電・訪問した先(call_list) ----
+    // 活動履歴17の「対応種別」の条件
+    function kindCond(kind) {
+      if (kind === '架電') return ' and 対応種別 in ("架電")';
+      if (kind === '商談') return ' and 対応種別 in ("商談（初回）", "商談（2回目以降）")';
+      return kind ? ' and 対応種別 in (' + q(kind) + ')' : '';
+    }
+    function kindOk(kind, f) {  // kind: 17の対応種別、またはネタリストの「架電」「飛び込み」
+      if (!f) return true;
+      if (f === '架電') return kind === '架電';
+      if (f === '商談') return kind.indexOf('商談') === 0 || kind === '飛び込み';
+      return kind === f;
+    }
+    // 期間に対応した会社ごとにまとめる。結果の条件は「期間中の最後の対応」で見る
+    function callList(acts, leads, range, f, me) {
+      f = f || {};
+      var rows = {}, list = [];
+      function add(e) {
+        var key = normName(e.companyName) || (e.customerNo ? 'c' + e.customerNo : 'l' + e.leadNo);
+        var r = rows[key];
+        if (!r) { r = rows[key] = { key: key, companyName: e.companyName, customerNo: '', leadNo: '', n: 0, last: null, who: [] }; list.push(r); }
+        if (e.customerNo && !r.customerNo) r.customerNo = e.customerNo;
+        if (e.leadNo && !r.leadNo) r.leadNo = e.leadNo;
+        r.n++;
+        e.who.forEach(function (w) { if (r.who.indexOf(w) < 0) r.who.push(w); });
+        if (!r.last || (e.date + e.time) > (r.last.date + r.last.time)) r.last = e;
+      }
+      acts.forEach(function (a) {
+        var d = v(a, '対応日付'), k = v(a, '対応種別') || 'その他', who = v(a, '対応者') || [];
+        if (d < range.from || d > range.to || !kindOk(k, f.kind)) return;
+        if (me && !who.some(function (u) { return u.code === me; })) return;
+        add({ date: d, time: String(v(a, '対応時刻')).slice(0, 5), kind: k, result: v(a, 'コール業務'), who: who.map(function (u) { return u.name; }),
+          companyName: v(a, '会社名'), customerNo: v(a, '顧客No'), leadNo: '', text: v(a, '内容'), app: APP.activity, id: v(a, '$id') });
+      });
+      leads.forEach(function (l) {
+        (v(l, '架電履歴') || []).forEach(function (row) {
+          var x = row.value || {}, d = v(x, '履歴日付'), k = v(x, '履歴種別') === '飛び込み' ? '飛び込み' : '架電', who = v(x, '履歴担当') || [];
+          if (d < range.from || d > range.to || !kindOk(k, f.kind)) return;
+          if (me && !who.some(function (u) { return u.code === me; })) return;
+          add({ date: d, time: String(v(x, '履歴時刻')).slice(0, 5), kind: k, result: LEAD_RESULT[v(x, '履歴結果')] || v(x, '履歴結果'), who: who.map(function (u) { return u.name; }),
+            companyName: v(l, '会社名'), customerNo: '', leadNo: v(l, '$id'), text: v(x, '履歴メモ'), app: APP.lead, id: v(l, '$id') });
+        });
+      });
+      var want = f.results && f.results.length ? f.results : f.result ? [f.result] : [];
+      return list.filter(function (r) { return !want.length || want.indexOf(r.last.result) >= 0; })
+        .sort(function (a, b) { return (b.last.date + b.last.time).localeCompare(a.last.date + a.last.time); });
+    }
+    // 地域・業種の条件(顧客18・ネタ29の住所・業種・会社名で見る)
+    function placeOk(info, f) {
+      if (!f.area && !f.category) return true;
+      if (!info) return false;
+      var addr = toHalf(info.addr), cat = normName(info.cat + ' ' + info.name);
+      return (!f.area || addr.indexOf(toHalf(f.area)) >= 0) && (!f.category || cat.indexOf(normName(f.category)) >= 0);
     }
 
     // ---- 会社を探す(find_company)のクエリ ----
@@ -214,6 +344,8 @@
       today: today, addDays: addDays, period: period, q: q, PRESETS: PRESETS, presetPlan: presetPlan, INTENT_LABEL: INTENT_LABEL,
       v: v, users: users, fromActivity: fromActivity, fromLeadRow: fromLeadRow, mergeItems: mergeItems, collapse: collapse, isThin: isThin,
       KIND_ORDER: KIND_ORDER, RESULT_ORDER: RESULT_ORDER, countUp: countUp, headline: headline, findQueries: findQueries, md: md,
+      normPlan: normPlan, suggest: suggest, COMPANY_INTENTS: COMPANY_INTENTS, normName: normName, nameVariants: nameVariants, nameParts: nameParts,
+      similar: similar, toHalf: toHalf, kindCond: kindCond, callList: callList, placeOk: placeOk,
     };
   })();
 
@@ -221,6 +353,7 @@
   // deps: { get(app, query, fields) → Promise<records(最大500)>, getAll(app, query, fields, max) → Promise<records>, todayStr, me }
   function makeAnswer(plan, ctx, deps) {
     var Q = CA.q, P = Promise;
+    plan = CA.normPlan(plan);
     var hasCompany = !!(ctx.customerNo || ctx.leadNo || ctx.companyName);
 
     function activities(limit) {
@@ -399,27 +532,89 @@
           return view;
         });
       }
+      case 'call_list': {
+        var f = plan.filters;
+        var crange = CA.period(plan.period.type === 'none' ? { type: 'last_n_days', days: 7 } : plan.period, deps.todayStr) || CA.period({ type: 'last_n_days', days: 7 }, deps.todayStr);
+        var cme = plan.who === 'me' ? deps.me.code : null;
+        var leadKinds = !f.kind || f.kind === '架電' || f.kind === '商談';
+        view.title = (f.kind === '商談' ? '訪問' : f.kind || '架電・訪問') + 'した先 ' + crange.label + (cme ? '・自分' : '・全員') +
+          (f.results.length ? '・最後が' + f.results.join('か') : '') + (f.area ? '・' + f.area : '') + (f.category ? '・' + f.category : '');
+        return P.all([
+          deps.getAll(APP.activity, '対応日付 >= ' + Q(crange.from) + ' and 対応日付 <= ' + Q(crange.to) + CA.kindCond(f.kind) + (cme ? ' and 対応者 in (LOGINUSER())' : ''),
+            ['$id', '顧客No', '会社名', '対応日付', '対応時刻', '対応種別', 'コール業務', '対応者', '内容'], 5000),
+          leadKinds ? deps.getAll(APP.lead, '履歴日付 >= ' + Q(crange.from) + ' and 履歴日付 <= ' + Q(crange.to), ['$id', '会社名', '電話番号', '市区町村', '丁目番地等', '中分類', 'G_業種', '架電履歴'], 3000) : P.resolve([]),
+        ]).then(function (rs) {
+          var rows = CA.callList(rs[0], rs[1], crange, f, cme);
+          var leadInfo = {};
+          rs[1].forEach(function (l) {
+            leadInfo[CA.v(l, '$id')] = { name: CA.v(l, '会社名'), addr: CA.v(l, '市区町村') + CA.v(l, '丁目番地等'), cat: CA.v(l, '中分類') + ' ' + CA.v(l, 'G_業種'), phone: CA.v(l, '電話番号') };
+          });
+          // 顧客18の住所・業種・電話(100件ずつ)
+          var ids = [];
+          rows.forEach(function (r) { if (r.customerNo && /^\d+$/.test(r.customerNo) && ids.indexOf(r.customerNo) < 0) ids.push(r.customerNo); });
+          var jobs = [];
+          for (var i = 0; i < ids.length && i < 1000; i += 100) {
+            jobs.push(deps.get(APP.customer, '$id in (' + ids.slice(i, i + 100).join(', ') + ') limit 100', ['$id', '会社名', '住所', '中分類', '業種メモ', '電話番号']));
+          }
+          return P.all(jobs).then(function (cs) {
+            var custInfo = {};
+            [].concat.apply([], cs).forEach(function (c) {
+              custInfo[CA.v(c, '$id')] = { name: CA.v(c, '会社名'), addr: CA.v(c, '住所'), cat: CA.v(c, '中分類') + ' ' + CA.v(c, '業種メモ'), phone: CA.v(c, '電話番号') };
+            });
+            rows = rows.filter(function (r) {
+              var ci = custInfo[r.customerNo], li = leadInfo[r.leadNo];
+              r.info = ci || li || null;
+              return CA.placeOk(ci, f) || CA.placeOk(li, f);
+            });
+            view.sections.push({ type: 'calls', items: rows.slice(0, 100), total: rows.length });
+            view.notes.push('同じ会社への対応は1行にまとめ、期間中の最後の対応を出しています' + (f.results.length ? '(結果の条件も最後の対応で見ています)' : '') + '。');
+            if (rows.length > 100) view.notes.push('新しい順に100件だけ出しています。期間や条件を絞ってください。');
+            return view;
+          });
+        });
+      }
       default:
-        view.notes.push('この質問にはまだ答えられません。下のボタンから選ぶか、「前回どうだった?」「今月の私のアポ数」のように聞いてください。');
+        view.suggest = true;
+        view.notes.push('この質問にはまだ答えられません。近いものを下に出しました。押すか、「前回どうだった?」「ここ10日で不在だった店」のように聞き直してください。');
         return P.resolve(view);
     }
   }
 
-  // 会社名で探す(target=keyword)→ 候補
+  // 会社名で探す(target=keyword)→ 候補。表記ゆれをそろえて探し、無ければ切れ端で探して近い順に3件(maybe)
   function findCompanies(keyword, deps) {
-    var k = CA.q(keyword);
-    return Promise.all([
-      deps.get(APP.customer, '会社名 like ' + k + ' order by 顧客No desc limit 10', ['$id', '会社名', '住所']),
-      deps.get(APP.lead, '会社名 like ' + k + ' order by レコード番号 desc limit 10', ['$id', '会社名', '市区町村', '丁目番地等']),
-    ]).then(function (rs) {
+    function cond(words) { return '(' + words.map(function (w) { return '会社名 like ' + CA.q(w); }).join(' or ') + ')'; }
+    function look(words, limit) {
+      if (!words.length) return Promise.resolve([[], []]);
+      return Promise.all([
+        deps.get(APP.customer, cond(words) + ' order by 顧客No desc limit ' + limit, ['$id', '会社名', '住所']),
+        deps.get(APP.lead, cond(words) + ' order by レコード番号 desc limit ' + limit, ['$id', '会社名', '市区町村', '丁目番地等']),
+      ]);
+    }
+    function shape(rs) {
       var out = rs[0].map(function (r) { return { customerNo: CA.v(r, '$id'), companyName: CA.v(r, '会社名'), sub: '顧客 ' + CA.v(r, '住所') }; });
       var names = {};
-      out.forEach(function (c) { names[c.companyName] = 1; });
+      out.forEach(function (c) { names[CA.normName(c.companyName)] = 1; });
       rs[1].forEach(function (r) {
-        if (names[CA.v(r, '会社名')]) return;  // 顧客になっているネタは顧客のほうに出す
+        if (names[CA.normName(CA.v(r, '会社名'))]) return;  // 顧客になっているネタは顧客のほうに出す
         out.push({ leadNo: CA.v(r, '$id'), companyName: CA.v(r, '会社名'), sub: 'ネタ ' + CA.v(r, '市区町村') + CA.v(r, '丁目番地等') });
       });
       return out;
+    }
+    return look(CA.nameVariants(keyword), 10).then(function (rs) {
+      var out = shape(rs);
+      if (out.length) {
+        // 名前がぴったり同じものが1件だけなら、それに決める
+        var exact = out.filter(function (c) { return CA.normName(c.companyName) === CA.normName(keyword); });
+        return exact.length === 1 ? exact : out;
+      }
+      return look(CA.nameParts(keyword), 100).then(function (rs2) {
+        return shape(rs2).map(function (c) { c.score = CA.similar(keyword, c.companyName); return c; })
+          .filter(function (c) { return c.score >= 0.35; })
+          .sort(function (a, b) { return b.score - a.score; })
+          .slice(0, 3)
+          .map(function (c) { c.maybe = c.score < 1; return c; })
+          .filter(function (c, i, all) { return !(all[0] && !all[0].maybe && (!all[1] || all[1].maybe)) || i === 0; });  // 記号を除いて同じ名前が1件だけなら、それに決める
+      });
     });
   }
 
@@ -573,6 +768,19 @@
       }
       return html;
     }
+    if (s.type === 'calls') {
+      return '<div class="cai-sec">' + s.total + '件' + (s.total > s.items.length ? '(新しい順に' + s.items.length + '件)' : '') + '</div>' +
+        (s.items.length ? s.items.map(function (r) {
+          var e = r.last, info = r.info || {};
+          var app = r.customerNo ? APP.customer : r.leadNo ? APP.lead : e.app, id = r.customerNo || r.leadNo || e.id;
+          return '<div class="cai-item"><div class="cai-h"><b>' + esc(r.companyName) + '</b>' + (e.result ? ' <span class="cai-tag">' + esc(e.result) + '</span>' : '') +
+            ' <a href="' + recUrl(app, id) + '" ' + TGT + '>開く</a></div>' +
+            '<div class="cai-sub">最後 ' + esc(CA.md(e.date)) + (e.time ? ' ' + esc(e.time) : '') + ' ' + esc(e.kind) + (r.n > 1 ? '・期間中' + r.n + '回' : '') +
+            (r.who.length ? '・' + esc(r.who.join('・')) : '') + '</div>' +
+            (info.addr || info.phone ? '<div class="cai-sub">' + esc(cut(info.addr, 40)) + ' ' + tel(info.phone) + '</div>' : '') +
+            (e.text && e.text !== e.result ? '<div class="cai-t">' + esc(cut(e.text, 120)) + '</div>' : '') + '</div>';
+        }).join('') : '<div class="cai-empty">当てはまる対応はありません。上の条件を変えてみてください。</div>');
+    }
     if (s.type === 'leads' || s.type === 'customers') {
       var isLead = s.type === 'leads', app = isLead ? APP.lead : APP.customer;
       var head = '<div class="cai-sec">' + (isLead ? 'ネタリスト' : '顧客管理') + ' ' + (s.total || 0) + '件' + ((s.total || 0) > s.items.length ? '(上位' + s.items.length + '件を表示・' : '(') +
@@ -586,7 +794,19 @@
   }
   function viewHtml(view) {
     return '<div class="cai-title">' + esc(view.title) + (view.company ? ' <span class="cai-sub">' + esc(view.company) + '</span>' : '') + '</div>' +
-      view.sections.map(sectionHtml).join('') + view.notes.map(function (n) { return '<div class="cai-note">' + esc(n) + '</div>'; }).join('');
+      view.sections.map(sectionHtml).join('') + view.notes.map(function (n) { return '<div class="cai-note">' + esc(n) + '</div>'; }).join('') +
+      (view.suggestIds ? sugHtml(view.suggestIds) : '');
+  }
+  function sugHtml(ids) {
+    return '<div class="cai-sug">' + ids.map(function (id) {
+      var pr = CA.PRESETS.filter(function (x) { return x.id === id; })[0];
+      return '<button type="button" data-sug="' + esc(id) + '">' + esc(pr ? pr.label : CA.INTENT_LABEL[id]) + '</button>';
+    }).join('') + '</div>';
+  }
+  function wireSug(out) {
+    Array.prototype.forEach.call(out.querySelectorAll('button[data-sug]'), function (b) {
+      b.onclick = function () { state.aiQuestion = null; state.picked = null; run(CA.presetPlan(b.getAttribute('data-sug')), out); };
+    });
   }
 
   // ---- パネル ----
@@ -619,9 +839,120 @@
     '.cai-tbl{border-collapse:collapse;margin:6px 0}.cai-tbl th,.cai-tbl td{border:1px solid #e2e8f0;padding:3px 8px;text-align:right}.cai-tbl td:first-child{text-align:left}',
     '.cai-head{margin:6px 0}.cai-big{font-size:18px;color:#0f766e}',
     '.cai-foot{padding:6px 12px;color:#94a3b8;font-size:11px;border-top:1px solid #e2e8f0}',
+    '.cai-bar{padding:4px 12px;border-bottom:1px solid #e2e8f0;background:#f8fafc;font-size:12px}',
+    '.cai-bar summary{cursor:pointer;color:#0f766e;padding:2px 0}',
+    '#cai-panel.m .cai-bar{font-size:14px}',
+    '.cai-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin:4px 0}',
+    '.cai-row>span{color:#64748b}',
+    '.cai-row select,.cai-row input[type=text],.cai-row input[type=number]{padding:3px 4px;border:1px solid #cbd5e1;border-radius:4px;font-size:inherit;max-width:100%;background:#fff}',
+    '.cai-row input[type=number]{width:56px}.cai-row input[type=text]{width:96px}',
+    '.cai-res label{display:inline-flex;align-items:center;gap:2px;margin-right:4px;white-space:nowrap}',
+    '.cai-row button{padding:3px 8px;border:1px solid #cbd5e1;border-radius:4px;background:#fff;cursor:pointer;font-size:inherit}',
+    '.cai-fb{display:flex;gap:4px;width:100%}.cai-row .cai-fb input[type=text]{flex:1;width:auto}',
+    '.cai-sug{margin:8px 0;display:flex;flex-wrap:wrap;gap:6px}',
+    '.cai-sug button{padding:5px 10px;border-radius:14px;border:1px solid #0f766e;background:#fff;color:#0f766e;cursor:pointer;font-size:inherit}',
   ].join('\n');
 
-  var state = { ctx: null, appId: null };
+  var state = { ctx: null, appId: null, plan: null, picked: null, aiQuestion: null, aiPlan: null };
+
+  // ---- 条件の欄(AIの読み取りを見せて、その場で直せるようにする) ----
+  var PERIOD_OPTS = [['today', '今日'], ['yesterday', '昨日'], ['this_week', '今週'], ['last_week', '先週'], ['this_month', '今月'], ['last_month', '先月'], ['last_n_days', '直近○日']];
+  var INTENT_OPTS = ['call_list', 'my_counts', 'team_counts', 'follow_up', 'find_company', 'last_contact', 'history', 'contacts', 'deals', 'next_action', 'before_call', 'refusals'];
+  function sel(k, opts, cur) {
+    return '<select data-k="' + k + '">' + opts.map(function (o) {
+      return '<option value="' + esc(o[0]) + '"' + (o[0] === cur ? ' selected' : '') + '>' + esc(o[1]) + '</option>';
+    }).join('') + '</select>';
+  }
+  function renderBar(bar, plan, out) {
+    var it = plan.intent, f = plan.filters;
+    if (it === 'unknown') { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+    bar.style.display = '';
+    var counts = it === 'my_counts' || it === 'team_counts', listy = counts || it === 'call_list';
+    var h = '<div class="cai-row"><span>読み取り</span>' + sel('intent', INTENT_OPTS.map(function (i) { return [i, CA.INTENT_LABEL[i]]; }), it) + '</div>';
+    if (listy) {
+      var pt = plan.period.type === 'none' ? (it === 'call_list' ? 'last_n_days' : 'this_month') : plan.period.type;
+      var po = PERIOD_OPTS.slice();
+      if (pt === 'month') { var mr = CA.period(plan.period, CA.today(Date.now())); po.unshift(['month', mr ? mr.label.replace(/\(.*$/, '') : '指定の月']); }
+      h += '<div class="cai-row"><span>期間</span>' + sel('period', po, pt) +
+        (pt === 'last_n_days' ? '<input type="number" data-k="days" min="1" max="90" value="' + (plan.period.days || 7) + '">日' : '') + '</div>';
+      h += '<div class="cai-row"><span>人</span>' + sel('who', [['me', '自分'], ['all', '全員']], it === 'my_counts' ? 'me' : it === 'team_counts' ? 'all' : plan.who) +
+        '<span>種類</span>' + sel('kind', [['', '全部'], ['架電', '架電'], ['商談', '訪問(商談)'], ['メール', 'メール']], f.kind) + '</div>';
+      h += '<div class="cai-row cai-res"><span>結果</span>' + CA.RESULT_ORDER.map(function (r) {
+        return '<label><input type="checkbox" data-r="' + esc(r) + '"' + (f.results.indexOf(r) >= 0 ? ' checked' : '') + '>' + esc(r) + '</label>';
+      }).join('') + '</div>';
+    }
+    if (it === 'call_list' || it === 'find_company') {
+      h += '<div class="cai-row"><span>地域</span><input type="text" data-k="area" maxlength="10" value="' + esc(f.area) + '" placeholder="例 中央区">' +
+        '<span>業種</span><input type="text" data-k="category" maxlength="15" value="' + esc(f.category) + '" placeholder="例 美容室"></div>';
+    }
+    if (it === 'find_company') h += '<div class="cai-row"><span>進捗</span>' + sel('progress', [['', '指定なし'], ['未着手', 'まだ架電していない'], ['架電済み', '架電済み'], ['失注', '失注']], f.progress) + '</div>';
+    if (state.aiQuestion) {
+      h += '<div class="cai-row"><span>AIに聞いた文:「' + esc(cut(state.aiQuestion, 40)) + '」</span>' + (FEEDBACK_APP ? '<button type="button" class="cai-ng">👎 違った</button>' : '') + '</div>';
+    }
+    var open = !MOBILE || listy || it === 'find_company';
+    bar.innerHTML = '<details' + (open ? ' open' : '') + '><summary>条件(違っていたらここで直せます)</summary>' + h + '</details>';
+    function g(k) { return bar.querySelector('[data-k="' + k + '"]'); }
+    function readPlan(changed) {
+      var p = CA.normPlan(state.plan);
+      var ni = g('intent').value;
+      if (ni !== p.intent) {  // 種類を変えたら、その種類の初めの条件に寄せる
+        if (ni === 'my_counts') p.who = 'me';
+        if (ni === 'team_counts') p.who = 'all';
+        if (ni === 'call_list' && !p.filters.kind) p.filters.kind = '架電';
+        p.intent = ni;
+        p.target = CA.COMPANY_INTENTS.indexOf(ni) >= 0 ? 'current' : 'none';
+        return p;
+      }
+      if (g('period')) {
+        var t = g('period').value, dv = g('days') ? Math.floor(+g('days').value) : 7;
+        p.period = { type: t, month: t === 'month' ? p.period.month : '', days: t === 'last_n_days' ? Math.max(1, Math.min(90, dv || 7)) : 0 };
+      }
+      if (g('who')) {
+        p.who = g('who').value;
+        if (p.intent === 'my_counts' || p.intent === 'team_counts') p.intent = p.who === 'me' ? 'my_counts' : 'team_counts';
+      }
+      if (g('kind')) p.filters.kind = g('kind').value;
+      if (bar.querySelector('[data-r]')) {
+        p.filters.results = Array.prototype.filter.call(bar.querySelectorAll('[data-r]'), function (c) { return c.checked; }).map(function (c) { return c.getAttribute('data-r'); });
+        p.filters.result = p.filters.results[0] || '';
+      }
+      if (g('area')) p.filters.area = g('area').value.trim().slice(0, 10);
+      if (g('category')) p.filters.category = g('category').value.trim().slice(0, 15);
+      if (g('progress')) p.filters.progress = g('progress').value;
+      return p;
+    }
+    Array.prototype.forEach.call(bar.querySelectorAll('select,input'), function (el) {
+      el.onchange = function () {
+        var np = readPlan(el);
+        run(np, out, CA.COMPANY_INTENTS.indexOf(np.intent) >= 0 ? state.picked : null, { keepAi: true });
+      };
+    });
+    var ng = bar.querySelector('.cai-ng');
+    if (ng) ng.onclick = function () { showFeedback(ng.parentNode); };
+  }
+  // 「違った」: 質問の文・AIの読み取り・直した条件を社内の kintone(改善メモ)に残す。AIには送らない
+  function showFeedback(row) {
+    if (row.querySelector('.cai-fb')) return;
+    var box = document.createElement('span');
+    box.className = 'cai-fb';
+    box.innerHTML = '<input type="text" maxlength="200" placeholder="どう違った?(空でも送れます)"><button type="button">送る</button>';
+    row.appendChild(box);
+    var input = box.querySelector('input');
+    box.querySelector('button').onclick = function () {
+      kintone.api(kintone.api.url('/k/v1/record', true), 'POST', {
+        app: FEEDBACK_APP,
+        record: {
+          質問: { value: String(state.aiQuestion || '').slice(0, 200) },
+          AI読み取り: { value: JSON.stringify(state.aiPlan || {}) },
+          直した条件: { value: JSON.stringify(state.plan || {}) },
+          画面: { value: ((state.ctx && state.ctx.screen) || 'list') + ' app' + state.appId + (MOBILE ? ' スマホ' : ' PC') },
+          一言: { value: input.value.slice(0, 200) },
+        },
+      }).then(function () { box.innerHTML = ' 送りました。直すときの参考にします。'; },
+        function () { box.innerHTML = ' 送れませんでした。'; });
+    };
+    input.focus();
+  }
 
   function ensureStyle() {
     if (document.getElementById('cai-style')) return;
@@ -661,15 +992,16 @@
       '<div class="cai-chips">' + CA.PRESETS.filter(function (x) { return company || !x.company; }).map(function (x) {
         return '<button type="button" data-id="' + x.id + '">' + esc(x.label) + '</button>';
       }).join('') + '</div>' +
-      (GAS_URL ? '<div class="cai-ask"><input type="text" maxlength="200" placeholder="' + (company ? '例: 前回どうだった? 決裁者は?' : '例: 中央区の美容室でまだ電話してないところ') + '"><button type="button">聞く</button></div>' +
-        '<div class="cai-hint">会社名や人の名前は入れなくて大丈夫です(今開いている会社について答えます)。</div>' : '') +
+      (GAS_URL ? '<div class="cai-ask"><input type="text" maxlength="200" placeholder="' + (company ? '例: 前回どうだった? 決裁者は?' : '例: ここ10日で不在かコールのみだった店') + '"><button type="button">聞く</button></div>' +
+        '<div class="cai-hint">' + (company ? '会社名や人の名前は入れなくて大丈夫です(今開いている会社について答えます)。' : '答えのあと、上に出る「条件」で期間・人・結果・地域を直せます。') + '</div>' : '') +
+      '<div class="cai-bar" style="display:none"></div>' +
       '<div class="cai-out"></div>' +
       '<div class="cai-foot">' + (GAS_URL ? 'AI(Gemini)に送るのは質問の文だけです。お客様の記録は送りません。' : 'この画面の中だけで記録を探しています(AIは使っていません)。') + ' 見られる範囲はあなたの権限どおりです。</div>';
     document.body.appendChild(p);
     var out = p.querySelector('.cai-out');
     p.querySelector('.cai-top button').onclick = function () { p.parentNode.removeChild(p); };
     Array.prototype.forEach.call(p.querySelectorAll('.cai-chips button'), function (b) {
-      b.onclick = function () { run(CA.presetPlan(b.getAttribute('data-id')), out); };
+      b.onclick = function () { state.aiQuestion = null; state.picked = null; run(CA.presetPlan(b.getAttribute('data-id')), out); };
     });
     var input = p.querySelector('.cai-ask input');
     if (input) {
@@ -687,22 +1019,30 @@
 
   function run(plan, out, ctxOverride) {
     busy(out, '探しています…');
+    plan = CA.normPlan(plan);
+    state.plan = plan;
+    var bar = out.parentNode.querySelector('.cai-bar');
+    if (bar) renderBar(bar, plan, out);
     var base = ctxOverride || state.ctx || { screen: 'list' };
     var ctx = {};
     Object.keys(base).forEach(function (k) { ctx[k] = base[k]; });
     var deps = DEPS();
     var start = plan.target === 'keyword' && plan.companyKeyword
       ? findCompanies(plan.companyKeyword, deps).then(function (cands) {
-        if (cands.length === 1) return Object.assign(ctx, cands[0], { screen: 'list' });
+        if (cands.length === 1 && !cands[0].maybe) {
+          state.picked = { screen: 'list', customerNo: cands[0].customerNo, leadNo: cands[0].leadNo, companyName: cands[0].companyName };
+          return Object.assign(ctx, cands[0], { screen: 'list' });
+        }
         out.innerHTML = '<div class="cai-title">「' + esc(plan.companyKeyword) + '」</div>' +
-          (cands.length ? '<div class="cai-note">どの会社ですか?</div>' + cands.map(function (c, i) {
+          (cands.length ? '<div class="cai-note">' + (cands[0].maybe ? 'その名前では見つかりませんでした。もしかして:' : 'どの会社ですか?') + '</div>' + cands.map(function (c, i) {
             return '<div class="cai-item"><a href="#" data-i="' + i + '">' + esc(c.companyName) + '</a> <span class="cai-sub">' + esc(c.sub) + '</span></div>';
           }).join('') : '<div class="cai-empty">その名前の会社は顧客管理にもネタリストにも見つかりませんでした。</div>');
         Array.prototype.forEach.call(out.querySelectorAll('a[data-i]'), function (a) {
           a.onclick = function (e) {
             e.preventDefault();
             var c = cands[+a.getAttribute('data-i')];
-            run(Object.assign({}, plan, { target: 'current' }), out, { screen: 'list', customerNo: c.customerNo, leadNo: c.leadNo, companyName: c.companyName });
+            state.picked = { screen: 'list', customerNo: c.customerNo, leadNo: c.leadNo, companyName: c.companyName };
+            run(Object.assign({}, plan, { target: 'current', companyKeyword: '' }), out, state.picked);
           };
         });
         return null;
@@ -710,7 +1050,12 @@
       : Promise.resolve(ctx);
     start.then(function (c) {
       if (!c) return null;
-      return complete(c).then(function (c2) { return makeAnswer(plan, c2, deps); }).then(function (view) { out.innerHTML = viewHtml(view); });
+      return complete(c).then(function (c2) { return makeAnswer(plan, c2, deps).then(function (view) { return [view, c2]; }); }).then(function (x) {
+        var view = x[0];
+        if (view.suggest) view.suggestIds = CA.suggest(state.aiQuestion, !!x[1].companyName);
+        out.innerHTML = viewHtml(view);
+        wireSug(out);
+      });
     }).catch(function (err) {
       console.error('お客様AI', err);
       busy(out, '記録を読めませんでした。少し待ってからもう一度押してください。');
@@ -719,6 +1064,16 @@
 
   function askAi(text, out) {
     busy(out, '質問を読み取っています…');
+    state.aiQuestion = text.slice(0, 200);
+    state.aiPlan = null;
+    state.picked = null;
+    var bar0 = out.parentNode.querySelector('.cai-bar');
+    if (bar0) { bar0.innerHTML = ''; bar0.style.display = 'none'; }
+    var company = !!(state.ctx && state.ctx.companyName);
+    var fail = function (msg) {
+      out.innerHTML = '<div class="cai-note">' + esc(msg) + '</div><div class="cai-note">近いもの:</div>' + sugHtml(CA.suggest(text, company));
+      wireSug(out);
+    };
     var q = text.replace(/[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}/g, '(メール)')
       .replace(/(?:\+81[\s\-]?)?0\d{1,4}[\s\-()（）]?\d{1,4}[\s\-()（）]?\d{3,4}/g, '(電話番号)').slice(0, 200);
     var ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -728,14 +1083,14 @@
       .then(function (res) {
         clearTimeout(timer);
         if (res && res.ok && res.plan) {
+          state.aiPlan = res.plan;
           return run(res.plan, out);
         }
-        var why = res && res.reason === 'limit' ? '今日はAIへの質問の上限に達しました。上のボタンは使えます。' : 'AIが混み合っています。上のボタンを使うか、少し待ってからもう一度聞いてください。';
-        busy(out, why);
+        fail(res && res.reason === 'limit' ? '今日はAIへの質問の上限に達しました。ボタンは使えます。' : 'AIが混み合っています。ボタンを使うか、少し待ってからもう一度聞いてください。');
       })
       .catch(function () {
         clearTimeout(timer);
-        busy(out, 'AIにつながりませんでした。上のボタンは使えます。');
+        fail('AIにつながりませんでした。ボタンは使えます。');
       });
   }
 
