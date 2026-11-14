@@ -2,7 +2,10 @@
  * 週報・月報(app36)の「期間と実績を集計」ボタン(作成・編集画面)。
  * クラウドの自動作成(週報月報自動作成/main.py)と同じ数え方・同じ目標の按分にそろえている。
  *  - 実績の数え方は日報ボードと同じ: 訪問=訪問合計、
- *    架電・アポ・見込み=欄と明細の行数の大きい方、受注=受注件数。土日の実績も含め、平日/土日の内訳も出す
+ *    架電・アポ・見込み=欄と明細の行数の大きい方。土日の実績も含め、平日/土日の内訳も出す
+ *  - 受注件数・受注金額は日報ではなく案件19から数える(Q5 2026-11-04。グラフと同じ: 受注 かつ 受注日が期間内、金額=売上、
+ *    平日/土日は受注日の曜日)。個人レポートは主担当(複数なら最初の1人)=対象者の案件。
+ *    2026-12-31 までの期間は、日報の受注の合計も「確認したいこと」に並べて出す(移行の確認用)
  *  - 目標はチーム目標(app37、対象月=暦の月。10月=10/1〜10/31。2026-10-22に月度(21日〜翌月20日)から変更)。
  *    期間に含まれる各月の目標を営業日(平日)の日数で按分して合計する。月報(1日〜月末)ならその月の目標そのもの。
  *    個人レポートはチーム目標と比べないので目標欄を空にする
@@ -116,6 +119,24 @@
 
   // ---------- 日報1件の実績(日報ボードと同じ数え方) ----------
   var METRICS = ['visits', 'calls', 'appointments', 'prospects', 'orders', 'revenue'];
+  var ORDER_COMPARE_UNTIL = '2026-12-31';
+
+  // 案件19の受注(期間内に受注日がある案件)の件数と金額(Q5)
+  function wonMetrics(won) {
+    return {
+      orders: won.length,
+      revenue: won.reduce(function (t, d) { var n = Number(value(d, '売上')); return t + (isFinite(n) ? n : 0); }, 0)
+    };
+  }
+  function yen(n) { return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ','); }
+  function orderCompareNote(fromReports, fromDeals) {
+    var line = '【受注の数え方】受注件数・受注金額は案件管理の受注日で数えています: ' + fromDeals.orders + '件・' +
+      yen(fromDeals.revenue) + '円(参考: 日報の受注の合計 ' + fromReports.orders + '件・' + yen(fromReports.revenue) + '円)。';
+    if (fromReports.orders !== fromDeals.orders || fromReports.revenue !== fromDeals.revenue) {
+      line += '差は、日報に入らなかった受注や、受注日・売上を後から直した案件です。';
+    }
+    return line;
+  }
 
   function realRows(report) {
     return (value(report, '活動明細') || []).filter(function (row) {
@@ -247,6 +268,7 @@
     var dailyQuery = makeDateQuery('日付', start, end);
     var activityQuery = makeDateQuery('対応日付', start, end);
     var dealQuery = '';
+    var wonQuery = '商談フェーズ in ("受注") and ' + makeDateQuery('受注日', start, end);
     var scheduleQuery = '種類 in ("訪問") and 実施状況 in ("予定") and ' +
       '終了日時 < NOW() and 元予定No = ""';
     var userClause;
@@ -255,6 +277,7 @@
       dailyQuery += ' and 報告者' + userClause;
       activityQuery += ' and 対応者' + userClause;
       dealQuery = '主担当' + userClause;
+      wonQuery += ' and 主担当' + userClause;
       scheduleQuery += ' and 参加者' + userClause;
     }
 
@@ -272,8 +295,14 @@
       ]),
       getRecords(29, callQuery, ['進捗状況', '次回架電予定日']),
       countRecords(34, scheduleQuery),
-      scope === '個人' ? Promise.resolve(null) : proratedGoals(start, end)
+      scope === '個人' ? Promise.resolve(null) : proratedGoals(start, end),
+      getRecords(19, wonQuery, ['受注日', '売上', '主担当'])
     ]).then(function (results) {
+      // 個人は主担当の最初の1人が対象者の受注だけ(日報の受注の取り込みと同じ人、Q6)
+      var won = results[6].filter(function (d) {
+        var u = value(d, '主担当') || [];
+        return scope !== '個人' || (u.length && u[0].code === targetCode);
+      });
       var reports = results[0];
       var activities = results[1];
       var deals = results[2];
@@ -317,12 +346,17 @@
         candidateLines.push('自動判定した確認候補はありません。重要案件と次の接点を目視で確認してください。');
       }
       candidateLines.push('自動集計は登録済みデータを対象とします。勤務日・休暇は判定していません。');
+      var reportTotals = sumMetrics(reports);
+      var wonTotals = wonMetrics(won);
+      if (end <= ORDER_COMPARE_UNTIL) candidateLines.push(orderCompareNote(reportTotals, wonTotals));
 
       var goals = results[5];
       var recordToSet = recordApi().get().record;
       fieldValue(recordToSet, 'daily_reports', reports.length);
       fieldValue(recordToSet, 'activity_count', activities.length);
-      var totals = sumMetrics(reports);
+      var totals = reportTotals;
+      totals.orders = wonTotals.orders;
+      totals.revenue = wonTotals.revenue;
       METRICS.forEach(function (key) { fieldValue(recordToSet, key, totals[key]); });
       ['weekday', 'weekend'].forEach(function (dayType) {
         var weekend = dayType === 'weekend';
@@ -331,6 +365,9 @@
         fieldValue(recordToSet, dayType + '_activity_count',
           sumForDayType(activities, '対応日付', null, weekend));
         var part = sumMetrics(dayReports);
+        var dayWon = wonMetrics(won.filter(function (d) { return isWeekend(value(d, '受注日')) === weekend; }));
+        part.orders = dayWon.orders;
+        part.revenue = dayWon.revenue;
         METRICS.forEach(function (key) { fieldValue(recordToSet, dayType + '_' + key, part[key]); });
       });
       GOAL_FIELDS.forEach(function (g) { fieldValue(recordToSet, g[1], goals ? goals[g[1]] : ''); });
