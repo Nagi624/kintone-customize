@@ -122,12 +122,26 @@
     if (lat !== "") out["緯度"] = { value: lat };
     if (lon !== "") out["経度"] = { value: lon };
 
+    // 最寄り駅を手で入れたネタは、駅の欄も顧客に写す(2026-11 最寄り駅。customize-station-fields.js が同じアプリに要る。
+    // 無い・自動のネタは写さない = 顧客側の毎時処理が座標から入れる)
+    var sf = window.TaimeiStationFields;
+    if (sf) {
+      var st = sf.copyForCustomer(record);
+      Object.keys(st).forEach(function (key) { out[key] = st[key]; });
+    }
+
     return out;
   }
 
   function createCustomerRecord(record) {
     var body = { app: CUSTOMER_APP_ID, record: buildCustomerRecord(record) };
-    return kintone.api(kintone.api.url("/k/v1/record", true), "POST", body);
+    return kintone.api(kintone.api.url("/k/v1/record", true), "POST", body).catch(function (e) {
+      // 写した最寄り駅が駅マスタから消えているとルックアップで失敗する。駅の欄を外して1回だけやり直す(顧客側は毎時処理が入れる)
+      var station = ["最寄り駅キー", "駅の決め方", "駅まで徒歩分"].filter(function (k) { return body.record[k]; });
+      if (!station.length) throw e;
+      station.forEach(function (k) { delete body.record[k]; });
+      return kintone.api(kintone.api.url("/k/v1/record", true), "POST", body);
+    });
   }
 
   function buildActivityRecord(companyName, historyRow) {
